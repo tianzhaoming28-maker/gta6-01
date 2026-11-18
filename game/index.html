@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Palmira Heat — an original open-world crime game</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #17121f; height: 100%; }
+  body { display: flex; align-items: center; justify-content: center; min-height: 100vh;
+         font-family: system-ui, sans-serif; }
+  #wrap { text-align: center; }
+  canvas { width: min(1280px, 100vw); height: auto; aspect-ratio: 16 / 9;
+           background: #2e7f9e; border-radius: 6px; box-shadow: 0 18px 60px rgba(0,0,0,0.55);
+           image-rendering: auto; }
+  p { color: #cbb59a; font-size: 13px; margin: 10px 0 0; }
+  b { color: #ffd76a; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="1280" height="720"></canvas>
+  <p><b>Palmira Heat</b> — WASD drive &amp; walk · E enter car · Shift sprint · Space punch / handbrake · mouse aim, click shoot · P pause · M mute</p>
+</div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

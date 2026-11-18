@@ -1,0 +1,4 @@
+# Run output and the raw screenshot captures stay local: the program regenerates the output
+# on every run, and the captures travel inside the repo as base64 in screenshots-data.ts.
+out/
+screenshots-src/
