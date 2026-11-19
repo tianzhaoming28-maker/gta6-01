@@ -1,197 +1,317 @@
-// player.js — Rico Vega on foot and behind the wheel: movement, sprint,
-// entering and stealing cars, fists, and the pistol once he picks one up.
+// Coral Vice - the player: Marina "Mari" Vega, ex-getaway driver.
+// On foot she walks, sprints, punches and shoots with mouse aim; in a
+// car she drives it. Also owns bullets and car entry/exit.
+'use strict';
 
-import { PLAYER_SPEED, PLAYER_SPRINT, PLAYER_RADIUS } from './config.js';
-import { clamp, dist } from './rng.js';
-import { collideCircle } from './world.js';
-import { driveCar, carSpeedKmh } from './vehicles.js';
-import { hurtPed } from './pedestrians.js';
-
-export function makePlayer(x, y) {
-  return {
-    x, y, vx: 0, vy: 0,
-    angle: -Math.PI / 2,
-    health: 100, maxHealth: 100,
-    car: null,               // car being driven, or null on foot
-    hasPistol: false, ammo: 0,
-    meleeT: 0, shootT: 0, hurtT: 0,
-    walkPhase: 0, moving: false,
-    bustMeter: 0,            // fills while police hold Rico still
-    dead: false,
-  };
-}
-
-export function nearestEnterableCar(G, range = 46) {
-  let best = null, bd = range;
-  for (const car of G.cars) {
-    if (car.wrecked) continue;
-    const d = dist(G.player.x, G.player.y, car.x, car.y);
-    if (d < bd) { bd = d; best = car; }
-  }
-  return best;
-}
-
-function enterCar(G, car) {
-  const p = G.player;
-  p.car = car;
-  if (car.role === 'police') car.wasPolice = true;
-  if (car.role === 'parked' || (car.role === 'traffic' && Math.abs(car.speed) < 30)) {
-    if (car.driver === 'ai') {
-      // The driver bails out and runs.
-      const ped = G.spawnPed(car.x + 14, car.y + 10, {});
-      ped.state = 'flee'; ped.fleeT = 3;
-    }
-    if (car.role !== 'mission' && car.role !== 'rival') G.commitCrime('theft', car.x, car.y);
-    car.role = 'player';
-    car.driver = 'player';
-  } else if (car.role === 'traffic') {
-    G.commitCrime('theft', car.x, car.y);
-    car.role = 'player';
-    car.driver = 'player';
-  } else {
-    car.role = 'player';
-    car.driver = 'player';
-  }
-  G.audio.door();
-}
-
-function exitCar(G) {
-  const p = G.player;
-  const car = p.car;
-  if (!car) return;
-  car.role = car.wasPolice ? 'police' : 'parked';
-  car.driver = null;
-  car.throttle = 0;
-  p.car = null;
-  // Step out on the left side, clear of the bodywork.
-  const sx = -Math.sin(car.angle), sy = Math.cos(car.angle);
-  p.x = car.x + sx * (car.spec.h + 8);
-  p.y = car.y + sy * (car.spec.h + 8);
-  p.vx = 0; p.vy = 0;
-  G.audio.door();
-}
-
-export function updatePlayer(G, dt) {
-  const p = G.player;
-  const input = G.input;
-  if (p.hurtT > 0) p.hurtT -= dt;
-  if (p.meleeT > 0) p.meleeT -= dt;
-  if (p.shootT > 0) p.shootT -= dt;
-
-  if (input.hit('KeyE')) {
-    if (p.car) exitCar(G);
-    else {
-      const car = nearestEnterableCar(G);
-      if (car) enterCar(G, car);
-    }
-  }
-
-  if (p.car) {
-    const car = p.car;
-    p.x = car.x; p.y = car.y;
-    p.angle = car.angle;
-    const ctrl = {
-      throttle: (input.down('KeyW') || input.down('ArrowUp') ? 1 : 0) + (input.down('KeyS') || input.down('ArrowDown') ? -1 : 0),
-      steer: (input.down('KeyD') || input.down('ArrowRight') ? 1 : 0) - (input.down('KeyA') || input.down('ArrowLeft') ? 1 : 0),
-      handbrake: input.down('Space'),
+CV.Player = {
+  create: function (x, y) {
+    return {
+      x: x, y: y,
+      angle: -Math.PI / 2,
+      hp: CV.PLAYER_MAX_HP,
+      mode: 'foot',           // 'foot' | 'car'
+      car: null,
+      punchT: 0,
+      punchCd: 0,
+      fireCd: 0,
+      walkPhase: 0,
+      moving: false,
+      ammo: Infinity,
+      deadT: 0,
+      name: 'Mari Vega'
     };
-    car.handbrakeNow = ctrl.handbrake;
-    driveCar(G, car, ctrl, dt);
-    G.audio.engine(clamp(Math.abs(car.speed) / car.spec.top, 0, 1), true);
-    // Running people down is the darkest crime in Palmira.
-    for (const ped of G.peds) {
-      if (ped.state === 'down' || ped.isOfficer) continue;
-      if (Math.abs(car.speed) > 40 && dist(p.x, p.y, ped.x, ped.y) < 20) {
-        hurtPed(G, ped, 32, car.vx * 0.6, car.vy * 0.6);
-        G.audio.crash(false);
-        G.shake = Math.min(10, G.shake + 3);
+  },
+
+  update: function (dt, game) {
+    var p = game.player;
+    var input = CV.Input;
+    if (p.punchCd > 0) p.punchCd -= dt;
+    if (p.punchT > 0) p.punchT -= dt;
+    if (p.fireCd > 0) p.fireCd -= dt;
+
+    if (p.mode === 'car' && p.car) {
+      this.updateDriving(dt, game);
+    } else {
+      this.updateOnFoot(dt, game);
+    }
+
+    // Enter / exit vehicles with E.
+    if (input.hit('KeyE')) {
+      if (p.mode === 'car') this.exitCar(game);
+      else this.tryEnterCar(game);
+    }
+  },
+
+  updateOnFoot: function (dt, game) {
+    var p = game.player;
+    var input = CV.Input;
+    var axis = input.moveAxis();
+    var sprint = input.down('ShiftLeft') || input.down('ShiftRight');
+    var speed = sprint ? CV.PLAYER_SPRINT : CV.PLAYER_SPEED;
+    p.moving = axis.x !== 0 || axis.y !== 0;
+
+    if (p.moving) {
+      var len = Math.sqrt(axis.x * axis.x + axis.y * axis.y);
+      var nx = p.x + (axis.x / len) * speed * dt;
+      var ny = p.y + (axis.y / len) * speed * dt;
+      nx = CV.clamp(nx, 8, CV.WORLD_W - 8);
+      ny = CV.clamp(ny, 8, CV.WORLD_H - 8);
+      var hit = CV.World.collideCircle(nx, ny, CV.PLAYER_RADIUS);
+      if (hit) { nx = hit.x; ny = hit.y; }
+      p.x = nx;
+      p.y = ny;
+      p.walkPhase += dt * (sprint ? 13 : 9);
+      // Face movement unless aiming with the mouse while firing.
+      if (!input.mouseDown) {
+        p.angle = Math.atan2(axis.y, axis.x);
       }
     }
-    return;
-  }
 
-  // --- On foot -------------------------------------------------------------
-  G.audio.engine(0, false);
-  const mx = input.moveX(), my = input.moveY();
-  const sprint = input.down('ShiftLeft') || input.down('ShiftRight');
-  const speed = sprint ? PLAYER_SPRINT : PLAYER_SPEED;
-  p.moving = mx !== 0 || my !== 0;
-  if (p.moving) {
-    const len = Math.hypot(mx, my);
-    p.vx = (mx / len) * speed;
-    p.vy = (my / len) * speed;
-    p.angle = Math.atan2(p.vy, p.vx);
-    p.walkPhase += dt * (sprint ? 12 : 8.5);
-  } else {
-    p.vx *= Math.exp(-10 * dt); p.vy *= Math.exp(-10 * dt);
-  }
-  p.x += p.vx * dt;
-  p.y += p.vy * dt;
-  const vel = { x: p.vx, y: p.vy };
-  collideCircle(G.world, p, PLAYER_RADIUS, vel);
-  p.vx = vel.x; p.vy = vel.y;
-  p.x = clamp(p.x, 12, G.world.W - 12);
-  p.y = clamp(p.y, 12, G.world.waterY - 8);
+    // Aim: face the mouse cursor in world space.
+    var cam = game.camera;
+    var wx = cam.x + input.mouseX;
+    var wy = cam.y + input.mouseY;
+    if (input.mouseDown || input.down('KeyJ')) {
+      p.angle = Math.atan2(wy - p.y, wx - p.x);
+    }
 
-  // Aim with the mouse while armed; face movement otherwise.
-  const aim = G.screenToWorld(input.mouseX, input.mouseY);
-  if (p.hasPistol) p.angle = Math.atan2(aim.y - p.y, aim.x - p.x);
+    // Punch: F key or Space.
+    if ((input.hit('KeyF') || input.hit('Space')) && p.punchCd <= 0) {
+      p.punchCd = 0.34;
+      p.punchT = 0.18;
+      CV.Audio.punch();
+      this.punchHit(game);
+    }
 
-  // Melee: Space or click, a short swing that can drop a pedestrian.
-  if ((input.hit('Space') || input.mouseClicked) && p.meleeT <= 0 && !p.hasPistol) {
-    p.meleeT = 0.34;
-    G.audio.melee();
-    const fx = Math.cos(p.angle), fy = Math.sin(p.angle);
-    for (const ped of G.peds) {
-      const dx = ped.x - p.x, dy = ped.y - p.y;
-      if (dx * fx + dy * fy > 0 && Math.hypot(dx, dy) < 30 && ped.state !== 'down') {
-        hurtPed(G, ped, 16, fx * 160, fy * 160);
+    // Shoot: hold left mouse.
+    if (input.mouseDown && p.fireCd <= 0) {
+      p.fireCd = 0.21;
+      this.shoot(game, wx, wy);
+    }
+  },
+
+  punchHit: function (game) {
+    var p = game.player;
+    var hx = p.x + Math.cos(p.angle) * 20;
+    var hy = p.y + Math.sin(p.angle) * 20;
+    var peds = CV.Pedestrians.list;
+    for (var i = 0; i < peds.length; i++) {
+      var ped = peds[i];
+      if (ped.state !== 'down' && CV.dist(hx, hy, ped.x, ped.y) < 17) {
+        CV.Audio.hurt();
+        CV.Pedestrians.hurt(ped, 12, game, true);
+        game.onPunchLanded(ped);
+        return;
       }
     }
-    for (const car of G.cars) {
-      if (dist(p.x, p.y, car.x, car.y) < 34) {
-        G.damageCarFx(car, 3);
+    var cops = CV.Police.units;
+    for (var j = 0; j < cops.length; j++) {
+      var cop = cops[j];
+      if (cop.kind === 'foot' && !cop.dead && CV.dist(hx, hy, cop.x, cop.y) < 17) {
+        CV.Audio.hurt();
+        CV.Police.hurt(cop, 12, game);
+        return;
       }
     }
-  }
+  },
 
-  // Pistol fire: click to shoot toward the mouse.
-  if (p.hasPistol && input.mouseDown && p.shootT <= 0) {
-    if (p.ammo > 0) {
-      p.shootT = 0.21;
-      p.ammo--;
-      G.fireBullet(p.x + Math.cos(p.angle) * 14, p.y + Math.sin(p.angle) * 14, p.angle, 'player');
-      G.audio.gunshot();
-      G.setPanic(p.x, p.y);
-      G.commitCrime('shot', p.x, p.y);
-      if (p.ammo === 0) { /* keep the empty pistol; ammo pickups refill it */ }
-    } else if (p.shootT <= 0) {
-      p.shootT = 0.3;
-      G.audio.blip(1200, 0.04, 'square', 0.08); // dry click
+  shoot: function (game, wx, wy) {
+    var p = game.player;
+    var a = Math.atan2(wy - p.y, wx - p.x);
+    var spread = (game.rng.next() - 0.5) * 0.045;
+    game.bullets.push({
+      x: p.x + Math.cos(a) * 14,
+      y: p.y + Math.sin(a) * 14,
+      vx: Math.cos(a + spread) * 640,
+      vy: Math.sin(a + spread) * 640,
+      life: 0.55,
+      from: 'player',
+      dmg: 16
+    });
+    game.recentShotT = 1.2;
+    game.stats.shots++;
+    CV.Audio.shoot();
+    game.muzzleT = 0.05;
+  },
+
+  updateDriving: function (dt, game) {
+    var p = game.player;
+    var car = p.car;
+    var input = CV.Input;
+    var throttle = 0;
+    var steer = 0;
+    if (input.down('KeyW') || input.down('ArrowUp')) throttle = 1;
+    if (input.down('KeyS') || input.down('ArrowDown')) throttle = -1;
+    if (input.down('KeyA') || input.down('ArrowLeft')) steer = -1;
+    if (input.down('KeyD') || input.down('ArrowRight')) steer = 1;
+    if (input.down('Space')) {
+      // Handbrake: strong drag, sharper steering.
+      car.speed = CV.lerp(car.speed, 0, CV.clamp(dt * 3.2, 0, 1));
+      steer *= 1.5;
     }
-  }
+    car.brake = throttle < 0 || input.down('Space');
+    // Horn: H startles nearby pedestrians out of the road.
+    if (input.hit('KeyH') && car.honkCd <= 0) {
+      car.honkCd = 0.45;
+      CV.Audio.honk();
+      var peds = CV.Pedestrians.list;
+      for (var i = 0; i < peds.length; i++) {
+        var ped = peds[i];
+        if (ped.state !== 'down' && CV.dist(ped.x, ped.y, car.x, car.y) < 74) {
+          ped.state = 'flee';
+          ped.fleeT = Math.max(ped.fleeT, 0.7);
+          ped.panicX = car.x;
+          ped.panicY = car.y;
+        }
+      }
+    }
+    if (car.hp <= 0) throttle = 0;
+    CV.stepCar(car, dt, throttle, steer);
+    p.x = car.x;
+    p.y = car.y;
+    p.angle = car.angle;
+    // Collateral: the car itself can run people down (checked globally).
+  },
 
-  // Slow health regen out of trouble keeps runs forgiving.
-  if (p.health > 0 && p.health < 100 && G.time - (p.lastHurtAt || 0) > 6) {
-    p.health = Math.min(100, p.health + dt * 4);
-  }
-}
+  tryEnterCar: function (game) {
+    var p = game.player;
+    var car = CV.Traffic.nearestCar(p.x, p.y, 34, false);
+    if (!car) return;
+    var wasTraffic = car.driver === 'traffic';
+    var wasParked = car.parked;
+    car.driver = 'player';
+    car.parked = false;
+    car.ai = null;
+    p.mode = 'car';
+    p.car = car;
+    p.x = car.x;
+    p.y = car.y;
+    CV.Audio.door();
+    if (wasTraffic) {
+      // Dragging a driver out is very much a crime.
+      game.addCrime(CV.CRIME_CARJACK, car.x, car.y);
+      game.stats.stolen++;
+      var peds = CV.Pedestrians.list;
+      for (var i = 0; i < peds.length; i++) {
+        if (CV.dist(peds[i].x, peds[i].y, car.x, car.y) < 90) {
+          peds[i].state = 'flee';
+          peds[i].fleeT = 2;
+          peds[i].panicX = car.x;
+          peds[i].panicY = car.y;
+        }
+      }
+    } else if (wasParked) {
+      game.addCrime(4, car.x, car.y); // hot-wiring is quieter, not legal
+      game.stats.stolen++;
+    }
+    game.onEnterCar(car);
+  },
 
-export function hurtPlayer(G, dmg) {
-  const p = G.player;
-  if (p.dead || G.state !== 'playing') return;
-  p.health -= dmg;
-  p.hurtT = 0.25;
-  p.lastHurtAt = G.time;
-  G.shake = Math.min(9, G.shake + dmg * 0.12);
-  if (p.health <= 0) {
-    p.health = 0;
-    p.dead = true;
-    G.onWasted();
-  }
-}
+  exitCar: function (game) {
+    var p = game.player;
+    var car = p.car;
+    if (!car) return;
+    // Step out on the left side of the car.
+    var sx = car.x + Math.cos(car.angle - Math.PI / 2) * 20;
+    var sy = car.y + Math.sin(car.angle - Math.PI / 2) * 20;
+    var hit = CV.World.collideCircle(sx, sy, CV.PLAYER_RADIUS);
+    if (hit) { sx = hit.x; sy = hit.y; }
+    p.x = CV.clamp(sx, 8, CV.WORLD_W - 8);
+    p.y = CV.clamp(sy, 8, CV.WORLD_H - 8);
+    if (Math.abs(car.speed) < 12) {
+      car.speed = 0;
+      car.driver = null;
+      car.parked = true;
+    } else {
+      // Bailing out of a rolling car: it coasts on driverless.
+      car.driver = null;
+      car.parked = false;
+      car.ai = null;
+      car.ghostT = 2.5;
+    }
+    p.mode = 'foot';
+    p.car = null;
+    CV.Audio.door();
+  },
 
-export function playerSpeedKmh(G) {
-  if (G.player.car) return carSpeedKmh(G.player.car);
-  return Math.hypot(G.player.vx, G.player.vy) * 0.4;
-}
+  // Driverless coasting cars and all bullets live here so player.js
+  // owns everything that can hurt someone.
+  updateProjectiles: function (dt, game) {
+    var bullets = game.bullets;
+    for (var i = bullets.length - 1; i >= 0; i--) {
+      var b = bullets[i];
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      b.life -= dt;
+      var remove = b.life <= 0;
+      if (!remove && CV.World.pointInBuilding(b.x, b.y, 0)) remove = true;
+      if (!remove) remove = this.bulletHit(b, game);
+      if (remove) bullets.splice(i, 1);
+    }
+    // Ghost cars coast to a stop.
+    var cars = CV.Traffic.cars;
+    for (var c = 0; c < cars.length; c++) {
+      var car = cars[c];
+      if (car.ghostT > 0) {
+        car.ghostT -= dt;
+        CV.stepCar(car, dt, 0, 0);
+        if (car.ghostT <= 0) car.parked = true;
+      }
+    }
+  },
+
+  bulletHit: function (b, game) {
+    var i, target;
+    if (b.from === 'player') {
+      // vs pedestrians
+      var peds = CV.Pedestrians.list;
+      for (i = 0; i < peds.length; i++) {
+        target = peds[i];
+        if (target.state !== 'down' && CV.dist(b.x, b.y, target.x, target.y) < 9) {
+          CV.Pedestrians.hurt(target, b.dmg, game, true);
+          game.addCrime(CV.CRIME_SHOOT, target.x, target.y);
+          return true;
+        }
+      }
+      // vs police
+      var cops = CV.Police.units;
+      for (i = 0; i < cops.length; i++) {
+        target = cops[i];
+        if (target.kind === 'foot' && !target.dead &&
+            CV.dist(b.x, b.y, target.x, target.y) < 9) {
+          CV.Police.hurt(target, b.dmg, game);
+          return true;
+        }
+        if (target.kind === 'car' && target.car &&
+            CV.dist(b.x, b.y, target.car.x, target.car.y) < 17) {
+          CV.damageCar(target.car, b.dmg * 0.6);
+          game.addCrime(CV.CRIME_SHOOT, target.car.x, target.car.y);
+          return true;
+        }
+      }
+      // vs cars generally
+      var cars = CV.Traffic.cars;
+      for (i = 0; i < cars.length; i++) {
+        target = cars[i];
+        if (CV.dist(b.x, b.y, target.x, target.y) < 16) {
+          CV.damageCar(target, b.dmg * 0.6);
+          if (target.driver === 'traffic' && target.ai) target.ai.panic = 3;
+          return true;
+        }
+      }
+    } else {
+      // Police bullets vs the player.
+      var p = game.player;
+      if (p.mode === 'foot' && CV.dist(b.x, b.y, p.x, p.y) < 10) {
+        game.damagePlayer(b.dmg * 0.55);
+        return true;
+      }
+      if (p.mode === 'car' && p.car && CV.dist(b.x, b.y, p.car.x, p.car.y) < 17) {
+        CV.damageCar(p.car, b.dmg * 0.5);
+        if (game.rng.chance(0.4)) game.damagePlayer(b.dmg * 0.22);
+        return true;
+      }
+    }
+    return false;
+  }
+};

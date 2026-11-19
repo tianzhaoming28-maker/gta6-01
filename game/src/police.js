@@ -1,194 +1,257 @@
-// police.js — the Palmira PD response: interceptors that hunt, ram and pin,
-// foot officers at high heat who shoot to stop, and roadblocks across the
-// avenues at four stars and up. Spawning follows the wanted level, and the
-// net loosens only when Rico stays clean and out of sight.
+// Coral Vice - Coral Bay Police Department.
+// Wanted stars decide how many units respond. Cars chase with a
+// pursuit steering model and try to box the player in; officers on
+// foot chase and shoot when close. Units far behind quietly despawn
+// so the chase always stays near the action.
+'use strict';
 
-import { HEAT_FOR_STAR } from './config.js';
-import { clamp, dist } from './rng.js';
-import { makeCar, driveCar, steerToward, updateCarEffects } from './vehicles.js';
-import { makePed } from './pedestrians.js';
-import { hurtPlayer } from './player.js';
+CV.Police = {
+  units: [],       // {kind:'car', car} | {kind:'foot', x,y,hp,...}
+  spawnCd: 0,
+  sirenT: 0,
 
-export function wantedStars(G) {
-  let stars = 0;
-  for (let i = 1; i <= 5; i++) if (G.heat >= HEAT_FOR_STAR[i]) stars = i;
-  return stars;
-}
-
-function desiredUnits(stars) {
-  return [0, 1, 2, 3, 4, 6][stars] || 0;
-}
-
-function spawnInterceptor(G) {
-  const p = G.player;
-  // Spawn on a road a few blocks away, never in plain view.
-  const world = G.world;
-  let x = 0, y = 0, ok = false;
-  for (let tries = 0; tries < 14 && !ok; tries++) {
-    const i = Math.floor(Math.random() * world.roadsV.length);
-    const j = Math.floor(Math.random() * world.roadsH.length);
-    x = world.roadsV[i] + 52; y = world.roadsH[j] + 52;
-    const d = dist(x, y, p.x, p.y);
-    ok = d > 520 && d < 1250;
-  }
-  if (!ok) { x = clamp(p.x + 700, 60, world.W - 60); y = clamp(p.y, 60, world.H - 300); }
-  const car = makeCar('police', x, y, Math.atan2(p.y - y, p.x - x), { role: 'police', color: '#f2f2f2' });
-  car.driver = 'police';
-  car.cruise = 300;
-  car.siren = G.audio.sirenStart();
-  G.cars.push(car);
-  return car;
-}
-
-function spawnOfficer(G, nearCar) {
-  const ped = makePed(nearCar.x + 20, nearCar.y + 14, { officer: true });
-  ped.shirt = '#20304a';
-  ped.pants = '#1b2432';
-  ped.speed = 118;
-  ped.shootT = Math.random() * 0.8;
-  G.peds.push(ped);
-  return ped;
-}
-
-function maybeRoadblock(G) {
-  if (G.roadblockT > 0) return;
-  G.roadblockT = 26;
-  const world = G.world;
-  const p = G.player;
-  // Block the road the player is heading along, two intersections ahead.
-  const dirX = p.car ? Math.cos(p.car.angle) : 1;
-  const bx = clamp(p.x + dirX * 560, 80, world.W - 80);
-  let bestRoad = world.roadsV[0], bd = Infinity;
-  for (const rx of world.roadsV) { const d = Math.abs(rx + 52 - bx); if (d < bd) { bd = d; bestRoad = rx; } }
-  let bestH = world.roadsH[0]; bd = Infinity;
-  for (const ry of world.roadsH) { const d = Math.abs(ry + 52 - p.y); if (d < bd) { bd = d; bestH = ry; } }
-  const y = bestH + 52;
-  for (let k = 0; k < 3; k++) {
-    const car = makeCar('police', bestRoad + 20 + k * 30, y + (k % 2 ? 16 : -14), Math.PI / 2, { role: 'police', color: '#f2f2f2' });
-    car.driver = null;
-    car.roadblock = true;
-    G.cars.push(car);
-    G.roadblocks.push(car);
-  }
-  G.notify('ROADBLOCK AHEAD — PPD', 2.2);
-}
-
-export function clearPolice(G) {
-  for (const car of G.cars) {
-    if (car.siren) { G.audio.sirenStop(car.siren); car.siren = null; }
-  }
-  G.cars = G.cars.filter((c) => c.role !== 'police');
-  G.peds = G.peds.filter((p) => !p.isOfficer);
-  G.roadblocks = [];
-}
-
-export function updatePolice(G, dt) {
-  const stars = wantedStars(G);
-  const p = G.player;
-  G.stars = stars;
-
-  if (G.roadblockT > 0) G.roadblockT -= dt;
-  if (stars >= 4) maybeRoadblock(G);
-  // Retire stale roadblocks far behind the player.
-  for (let i = G.roadblocks.length - 1; i >= 0; i--) {
-    const rb = G.roadblocks[i];
-    if (dist(rb.x, rb.y, p.x, p.y) > 900) {
-      G.cars.splice(G.cars.indexOf(rb), 1);
-      G.roadblocks.splice(i, 1);
+  reset: function () {
+    // Remove police cars from the traffic list.
+    for (var i = 0; i < this.units.length; i++) {
+      var u = this.units[i];
+      if (u.kind === 'car' && u.car) CV.Traffic.remove(u.car);
     }
-  }
+    this.units = [];
+    this.spawnCd = 0;
+  },
 
-  const units = G.cars.filter((c) => c.role === 'police' && c.driver === 'police' && !c.roadblock);
-  if (stars > 0 && G.policeSpawnT <= 0 && units.length < desiredUnits(stars)) {
-    spawnInterceptor(G);
-    G.policeSpawnT = 2.6;
-  }
-  if (G.policeSpawnT > 0) G.policeSpawnT -= dt;
+  desiredUnits: function (game) {
+    var stars = game.stars;
+    return {
+      cars: stars <= 0 ? 0 : Math.min(1 + stars, 5),
+      foot: (stars >= 2 && game.player.mode === 'foot') ? Math.min(stars, 4) : 0
+    };
+  },
 
-  // Too many units for the heat: the extras peel off and despawn.
-  let seen = false;
-  let sirenVol = 0;
-  for (const car of units) {
-    updateCarEffects(G, car, dt);
-    const d = dist(car.x, car.y, p.x, p.y);
-    if (d < 620) seen = true;
-    sirenVol = Math.max(sirenVol, clamp(1 - d / 800, 0, 1));
-    if (car.siren) G.audio.sirenSet(car.siren, sirenVol * 0.9);
-    if (car.wrecked) {
-      if (car.siren) { G.audio.sirenStop(car.siren); car.siren = null; }
-      continue;
+  countKind: function (kind) {
+    var n = 0;
+    for (var i = 0; i < this.units.length; i++) {
+      if (this.units[i].kind === kind && !this.units[i].dead) n++;
     }
-    if (units.length > desiredUnits(stars) && d > 200) {
-      // Peel off: slow down, then leave the world.
-      driveCar(G, car, { throttle: 0, steer: 0 }, dt);
-      car.peelT = (car.peelT || 0) + dt;
-      if (car.peelT > 1.6) {
-        if (car.siren) G.audio.sirenStop(car.siren);
-        G.cars.splice(G.cars.indexOf(car), 1);
+    return n;
+  },
+
+  update: function (dt, game) {
+    var want = this.desiredUnits(game);
+    this.spawnCd -= dt;
+
+    if (this.spawnCd <= 0) {
+      if (this.countKind('car') < want.cars) {
+        // At 3+ stars, every third unit cuts the player off from ahead.
+        this.spawnSeq = (this.spawnSeq || 0) + 1;
+        var cutOff = game.stars >= 3 && this.spawnSeq % 3 === 0 &&
+                     game.player.mode === 'car';
+        this.spawnCar(game, cutOff);
+        this.spawnCd = 1.4;
+      } else if (this.countKind('foot') < want.foot) {
+        this.spawnFoot(game);
+        this.spawnCd = 1.1;
       }
-      continue;
     }
-    // Pursuit: aim at a point just behind the player to ram, or alongside to pin.
-    const lead = p.car ? 0.32 : 0.1;
-    const tx = p.x + (p.car ? p.car.vx * lead : p.vx * lead);
-    const ty = p.y + (p.car ? p.car.vy * lead : p.vy * lead);
-    const ctrl = steerToward(car, tx, ty, dt, { throttle: 1 });
-    if (d < 60 && !p.car) ctrl.throttle = Math.min(ctrl.throttle, 0.4); // do not run him down
-    if (d < 34 && Math.abs(car.speed) < 30 && Math.abs(p.car ? p.car.speed : 0) < 30) ctrl.throttle = 0;
-    car.handbrakeNow = !!ctrl.handbrake;
-    driveCar(G, car, ctrl, dt);
 
-    // At three stars the driver bails out to fight on foot when close.
-    if (stars >= 3 && d < 120 && d > 42 && !car.officerOut && Math.abs(car.speed) < 24) {
-      car.officerOut = true;
-      spawnOfficer(G, car);
+    // Siren ambience while any unit is active.
+    if (this.units.length > 0) {
+      this.sirenT -= dt;
+      if (this.sirenT <= 0) {
+        this.sirenT = 0.9;
+        CV.Audio.sirenBlip();
+      }
+    }
+
+    for (var i = this.units.length - 1; i >= 0; i--) {
+      var u = this.units[i];
+      if (u.kind === 'car') this.updateCar(dt, game, u);
+      else this.updateFoot(dt, game, u);
+      // Despawn: dead for a while, or hopelessly far with no heat.
+      var ref = u.kind === 'car' ? u.car : u;
+      var d = CV.dist(ref.x, ref.y, game.player.x, game.player.y);
+      if ((u.dead && u.deadT > 14) || (d > 900 && game.stars === 0) ||
+          (d > 1500)) {
+        if (u.kind === 'car') CV.Traffic.remove(u.car);
+        this.units.splice(i, 1);
+      }
+    }
+  },
+
+  // Spawn on a road node a few blocks from the player.
+  spawnPos: function (game, distMin, distMax) {
+    var rng = game.rng;
+    var p = game.player;
+    for (var tries = 0; tries < 12; tries++) {
+      var a = rng.range(0, Math.PI * 2);
+      var d = rng.range(distMin, distMax);
+      var x = CV.clamp(p.x + Math.cos(a) * d, 20, CV.WORLD_W - 20);
+      var y = CV.clamp(p.y + Math.sin(a) * d, 20, CV.WORLD_H - 20);
+      // Snap to the nearest road centre intersection.
+      var ni = Math.round((x - CV.ROAD / 2) / CV.PITCH);
+      var nj = Math.round((y - CV.ROAD / 2) / CV.PITCH);
+      ni = CV.clamp(ni, 0, CV.COLS);
+      nj = CV.clamp(nj, 0, CV.ROWS);
+      var pos = CV.Traffic.nodePos(ni, nj);
+      if (CV.dist(pos.x, pos.y, p.x, p.y) > distMin * 0.7) return pos;
+    }
+    return CV.Traffic.nodePos(0, 0);
+  },
+
+  spawnCar: function (game, ahead) {
+    var pos;
+    if (ahead && game.player.car) {
+      // Spawn on the road grid in front of the player's heading.
+      var p = game.player;
+      var ax = CV.clamp(p.x + p.car.vx * 2.1, 20, CV.WORLD_W - 20);
+      var ay = CV.clamp(p.y + p.car.vy * 2.1, 20, CV.WORLD_H - 20);
+      var ni = CV.clamp(Math.round((ax - CV.ROAD / 2) / CV.PITCH), 0, CV.COLS);
+      var nj = CV.clamp(Math.round((ay - CV.ROAD / 2) / CV.PITCH), 0, CV.ROWS);
+      pos = CV.Traffic.nodePos(ni, nj);
+      if (CV.dist(pos.x, pos.y, p.x, p.y) < 200) pos = this.spawnPos(game, 330, 520);
+    } else {
+      pos = this.spawnPos(game, 330, 520);
+    }
+    var car = CV.makeCar(game.rng, pos.x, pos.y, 0, {
+      driver: 'police',
+      color: '#f5f6fa',
+      type: 1
+    });
+    car.parked = false;
+    car.driver = 'police';
+    car.police = true;
+    CV.Traffic.cars.push(car);
+    this.units.push({ kind: 'car', car: car, dead: false, deadT: 0, stuckT: 0 });
+  },
+
+  spawnFoot: function (game) {
+    var pos = this.spawnPos(game, 200, 320);
+    this.units.push({
+      kind: 'foot',
+      x: pos.x, y: pos.y,
+      angle: 0,
+      hp: 46,
+      speed: 128,
+      fireCd: game.rng.range(0.4, 1.2),
+      dead: false, deadT: 0,
+      walkPhase: 0
+    });
+  },
+
+  updateCar: function (dt, game, u) {
+    var car = u.car;
+    if (car.hp <= 0) {
+      u.dead = true;
+      u.deadT += dt;
+      CV.stepCar(car, dt, 0, 0);
+      return;
+    }
+    var p = game.player;
+    // Pursuit target: the player, led slightly by their velocity.
+    var tx = p.x;
+    var ty = p.y;
+    if (p.mode === 'car' && p.car) {
+      tx += p.car.vx * 0.35;
+      ty += p.car.vy * 0.35;
+    }
+    var want = Math.atan2(ty - car.y, tx - car.x);
+    var diff = want - car.angle;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    var steer = CV.clamp(diff * 2.6, -1, 1);
+    var d = CV.dist(car.x, car.y, p.x, p.y);
+
+    var wantSpeed = car.type.topSpeed * (0.82 + game.stars * 0.045);
+    // Ramming run: lined up behind a fleeing driver, close the gap hard.
+    if (p.mode === 'car' && Math.abs(diff) < 0.3 && d > 50 && d < 200) {
+      wantSpeed *= 1.15;
+    }
+    // Match speed when alongside to squeeze, not overshoot.
+    if (p.mode === 'car' && d < 46) wantSpeed = Math.min(wantSpeed, Math.abs(p.car ? p.car.speed : 0) + 26);
+    var throttle = 0;
+    if (Math.abs(diff) > 2.4 && d < 60) {
+      throttle = -0.7; // reverse out of a bad angle at close range
+      steer = -steer;
+    } else if (car.speed < wantSpeed) {
+      throttle = 1;
+    }
+    // Ease off when right on top of an on-foot player: try to block,
+    // not run them down (that is the foot units' arrest fantasy).
+    if (p.mode === 'foot' && d < 42) throttle = Math.min(throttle, 0.25);
+
+    CV.stepCar(car, dt, throttle, steer);
+
+    // Stuck detection: barely moving while throttling -> wiggle free.
+    if (Math.abs(car.speed) < 8 && throttle > 0) {
+      u.stuckT += dt;
+      if (u.stuckT > 1.1) {
+        CV.stepCar(car, dt, -1, steer > 0 ? -1 : 1);
+        if (u.stuckT > 1.7) u.stuckT = 0;
+      }
+    } else {
+      u.stuckT = 0;
+    }
+
+    car.siren = (car.siren + dt * 7) % (Math.PI * 2);
+  },
+
+  updateFoot: function (dt, game, u) {
+    if (u.dead) {
+      u.deadT += dt;
+      return;
+    }
+    var p = game.player;
+    var d = CV.dist(u.x, u.y, p.x, p.y);
+    u.fireCd -= dt;
+
+    if (d > 26) {
+      var a = Math.atan2(p.y - u.y, p.x - u.x);
+      u.angle = CV.angleLerp(u.angle, a, 0.3);
+      var nx = u.x + Math.cos(a) * u.speed * dt;
+      var ny = u.y + Math.sin(a) * u.speed * dt;
+      var hit = CV.World.collideCircle(nx, ny, 8);
+      if (hit) { nx = hit.x; ny = hit.y; }
+      u.x = CV.clamp(nx, 6, CV.WORLD_W - 6);
+      u.y = CV.clamp(ny, 6, CV.WORLD_H - 6);
+      u.walkPhase += dt * 10;
+    } else {
+      u.angle = Math.atan2(p.y - u.y, p.x - u.x);
+      // Shove the player: small damage, big annoyance.
+      if (u.fireCd <= 0) {
+        u.fireCd = 0.8;
+        game.damagePlayer(4);
+        CV.Audio.punch();
+      }
+    }
+
+    // Shooting range.
+    if (d < 230 && d > 30 && u.fireCd <= 0 && game.stars >= 2) {
+      u.fireCd = game.rng.range(0.55, 1.05);
+      var a2 = Math.atan2(p.y - u.y, p.x - u.x);
+      var spread = (game.rng.next() - 0.5) * 0.13;
+      game.bullets.push({
+        x: u.x + Math.cos(a2) * 12,
+        y: u.y + Math.sin(a2) * 12,
+        vx: Math.cos(a2 + spread) * 560,
+        vy: Math.sin(a2 + spread) * 560,
+        life: 0.5,
+        from: 'police',
+        dmg: 11
+      });
+      CV.Audio.shoot();
+      game.muzzleT = 0.05;
+    }
+  },
+
+  hurt: function (u, amount, game) {
+    if (u.dead) return;
+    u.hp -= amount;
+    game.addCrime(CV.CRIME_SHOOT + 8, u.x, u.y);
+    if (u.hp <= 0) {
+      u.dead = true;
+      u.deadT = 0;
+      game.addCrime(CV.CRIME_KILL, u.x, u.y);
+      game.stats.copsDown++;
     }
   }
-  G.policeSeen = seen;
-
-  updateOfficers(G, dt, stars);
-  updateBust(G, dt, units);
-}
-
-function updateOfficers(G, dt, stars) {
-  const p = G.player;
-  for (const ped of G.peds) {
-    if (!ped.isOfficer) continue;
-    if (ped.state === 'down') continue;
-    const d = dist(ped.x, ped.y, p.x, p.y);
-    ped.angle = Math.atan2(p.y - ped.y, p.x - ped.x);
-    if (d > 46) {
-      const sp = ped.speed;
-      ped.x += Math.cos(ped.angle) * sp * dt;
-      ped.y += Math.sin(ped.angle) * sp * dt;
-    }
-    // Officers shoot at four stars, or at three when Rico is armed/fleeing in a car.
-    const mayShoot = stars >= 4 || (stars >= 3 && (p.hasPistol || p.car));
-    ped.shootT -= dt;
-    if (mayShoot && d < 240 && d > 20 && ped.shootT <= 0) {
-      ped.shootT = 0.55 + Math.random() * 0.5;
-      G.fireBullet(ped.x + Math.cos(ped.angle) * 12, ped.y + Math.sin(ped.angle) * 12, ped.angle + (Math.random() - 0.5) * 0.14, 'police');
-      G.audio.gunshot();
-    }
-    if (d > 1100) ped.state = 'down', ped.downT = 0.01, ped.health = 0; // despawn via cleanup in main
-  }
-}
-
-function updateBust(G, dt, units) {
-  const p = G.player;
-  if (G.state !== 'playing' || p.dead) return;
-  let pressure = 0;
-  for (const car of units) {
-    if (dist(car.x, car.y, p.x, p.y) < 64) pressure++;
-  }
-  for (const ped of G.peds) {
-    if (ped.isOfficer && ped.state !== 'down' && dist(ped.x, ped.y, p.x, p.y) < 44) pressure++;
-  }
-  const playerSpeed = p.car ? Math.abs(p.car.speed) : Math.hypot(p.vx, p.vy);
-  if (pressure > 0 && playerSpeed < 26 && G.stars > 0) {
-    p.bustMeter += dt * (0.34 + pressure * 0.16);
-    if (p.bustMeter >= 1) { G.onBusted(); return; }
-  } else {
-    p.bustMeter = Math.max(0, p.bustMeter - dt * 0.7);
-  }
-}
+};

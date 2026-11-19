@@ -1,576 +1,507 @@
-// render.js — everything the camera sees: Palmira at golden hour (or dusk),
-// drawn flat-shaded with long shadows: water, sand, roads with lanes and
-// crosswalks, pastel blocks, palms, cars with headlights, people, effects.
+// Coral Vice - rendering. Hand-rolled Canvas2D, top-down with a
+// slight fake-height offset on buildings so the city feels tall.
+// Everything draws relative to the camera in game.camera.
+'use strict';
 
-import { PAL, ROAD_W, PITCH, CITY_H } from './config.js';
-import { clamp } from './rng.js';
+CV.Render = {
+  draw: function (ctx, game) {
+    var cam = game.camera;
+    var W = CV.VIEW_W;
+    var H = CV.VIEW_H;
 
-export function drawWorld(ctx, G) {
-  const world = G.world;
-  const cam = G.camera;
-  const vx = cam.x - 40, vy = cam.y - 40, vw = G.viewW + 80, vh = G.viewH + 80;
-
-  drawGround(ctx, G, vx, vy, vw, vh);
-  drawRoads(ctx, G, vx, vy, vw, vh);
-  drawBlocks(ctx, G, vx, vy, vw, vh);
-  drawBeachProps(ctx, G);
-
-  // Skid marks under everything that moves.
-  ctx.fillStyle = 'rgba(25,22,30,0.5)';
-  for (const s of G.skids) {
-    if (s.x < vx || s.x > vx + vw || s.y < vy || s.y > vy + vh) continue;
-    ctx.globalAlpha = clamp(s.life / 14, 0, 0.55);
-    ctx.fillRect(s.x - 2.5, s.y - 2.5, 5, 5);
-  }
-  ctx.globalAlpha = 1;
-
-  drawProps(ctx, G, vx, vy, vw, vh);
-  drawMarker(ctx, G);
-
-  // Cars sorted by y so lower ones overlap correctly.
-  const sorted = G.cars.slice().sort((a, b) => a.y - b.y);
-  for (const car of sorted) {
-    if (car.x < vx - 80 || car.x > vx + vw || car.y < vy - 80 || car.y > vy + vh) continue;
-    drawCar(ctx, G, car);
-  }
-  for (const ped of G.peds) {
-    if (ped.x < vx - 30 || ped.x > vx + vw || ped.y < vy - 30 || ped.y > vy + vh) continue;
-    drawPed(ctx, G, ped);
-  }
-  if (!G.player.car && G.state !== 'title') drawPlayer(ctx, G);
-  drawBullets(ctx, G);
-  drawParticles(ctx, G);
-  drawPopups(ctx, G);
-
-  if (G.dusk) drawDusk(ctx, G, sorted);
-}
-
-function drawGround(ctx, G, vx, vy, vw, vh) {
-  const world = G.world;
-  // Base: warm ground under the whole city.
-  ctx.fillStyle = '#9db06a';
-  ctx.fillRect(vx, vy, vw, vh);
-  // Sand and sea to the south.
-  ctx.fillStyle = PAL.sand;
-  ctx.fillRect(vx, Math.max(vy, world.beachY), vw, Math.min(vy + vh, world.waterY) - Math.max(vy, world.beachY));
-  ctx.fillStyle = PAL.sandWet;
-  ctx.fillRect(vx, world.waterY - 12, vw, 12);
-  if (vy + vh > world.waterY) {
-    const grad = ctx.createLinearGradient(0, world.waterY, 0, world.waterY + 330);
-    grad.addColorStop(0, PAL.water);
-    grad.addColorStop(1, PAL.waterDeep);
-    ctx.fillStyle = grad;
-    ctx.fillRect(vx, Math.max(vy, world.waterY), vw, vy + vh - Math.max(vy, world.waterY));
-    // Foam lines drifting with time.
-    ctx.strokeStyle = 'rgba(234,247,242,0.55)';
-    ctx.lineWidth = 2;
-    for (let i = 0; i < 3; i++) {
-      const fy = world.waterY + 8 + i * 26 + Math.sin(G.time * 0.7 + i * 2) * 4;
-      ctx.beginPath();
-      for (let x = Math.floor(vx / 90) * 90; x < vx + vw; x += 90) {
-        const yy = fy + Math.sin((x + G.time * 30) * 0.02 + i) * 3;
-        if (x === Math.floor(vx / 90) * 90) ctx.moveTo(x, yy); else ctx.lineTo(x, yy);
-      }
-      ctx.stroke();
+    ctx.save();
+    // Camera shake.
+    if (game.shake > 0.2) {
+      ctx.translate((game.rng.next() - 0.5) * game.shake, (game.rng.next() - 0.5) * game.shake);
     }
-  }
-  // The pier.
-  const p = world.pier;
-  ctx.fillStyle = 'rgba(46,26,54,0.25)';
-  ctx.fillRect(p.x + 10, p.y + 14, p.w, p.h);
-  ctx.fillStyle = '#8a6a4a';
-  ctx.fillRect(p.x, p.y, p.w, p.h);
-  ctx.fillStyle = '#75582f';
-  for (let y = p.y + 8; y < p.y + p.h; y += 22) ctx.fillRect(p.x, y, p.w, 3);
-}
+    ctx.translate(-Math.round(cam.x), -Math.round(cam.y));
 
-function drawRoads(ctx, G, vx, vy, vw, vh) {
-  const world = G.world;
-  ctx.fillStyle = PAL.asphalt;
-  for (const rx of world.roadsV) {
-    if (rx + ROAD_W < vx || rx > vx + vw) continue;
-    ctx.fillRect(rx, Math.max(vy, 0), ROAD_W, Math.min(vy + vh, CITY_H));
-  }
-  for (const ry of world.roadsH) {
-    if (ry + ROAD_W < vy || ry > vy + vh) continue;
-    ctx.fillRect(Math.max(vx, 0), ry, Math.min(vx + vw, world.W), ROAD_W);
-  }
-  // Road edges.
-  ctx.fillStyle = PAL.asphaltEdge;
-  for (const rx of world.roadsV) {
-    if (rx + ROAD_W < vx || rx > vx + vw) continue;
-    ctx.fillRect(rx, Math.max(vy, 0), 4, Math.min(vy + vh, CITY_H));
-    ctx.fillRect(rx + ROAD_W - 4, Math.max(vy, 0), 4, Math.min(vy + vh, CITY_H));
-  }
-  // Dashed centre lines.
-  ctx.fillStyle = PAL.laneMark;
-  for (const rx of world.roadsV) {
-    if (rx + ROAD_W < vx || rx > vx + vw) continue;
-    for (let y = Math.floor(vy / 46) * 46; y < Math.min(vy + vh, CITY_H); y += 46) {
-      if (nearIntersection(world, rx + ROAD_W / 2, y)) continue;
-      ctx.fillRect(rx + ROAD_W / 2 - 2, y, 4, 26);
-    }
-  }
-  for (const ry of world.roadsH) {
-    if (ry + ROAD_W < vy || ry > vy + vh) continue;
-    for (let x = Math.floor(vx / 46) * 46; x < Math.min(vx + vw, world.W); x += 46) {
-      if (nearIntersection(world, x, ry + ROAD_W / 2)) continue;
-      ctx.fillRect(x, ry + ROAD_W / 2 - 2, 26, 4);
-    }
-  }
-  // Crosswalks at every intersection.
-  ctx.fillStyle = 'rgba(245,245,240,0.75)';
-  for (const rx of world.roadsV) for (const ry of world.roadsH) {
-    if (rx + ROAD_W < vx || rx > vx + vw || ry + ROAD_W < vy || ry > vy + vh) continue;
-    for (let i = 0; i < 4; i++) {
-      ctx.fillRect(rx + 8 + i * 24, ry + 4, 13, 7);
-      ctx.fillRect(rx + 8 + i * 24, ry + ROAD_W - 11, 13, 7);
-      ctx.fillRect(rx + 4, ry + 8 + i * 24, 7, 13);
-      ctx.fillRect(rx + ROAD_W - 11, ry + 8 + i * 24, 7, 13);
-    }
-  }
-}
+    this.drawGround(ctx, game, cam);
+    this.drawRoads(ctx, game, cam);
+    this.drawProps(ctx, game, cam, false);
+    this.drawPickups(ctx, game);
+    this.drawMarker(ctx, game);
+    this.drawCars(ctx, game, cam);
+    this.drawPeds(ctx, game, cam);
+    this.drawPolice(ctx, game, cam);
+    this.drawPlayer(ctx, game);
+    this.drawBullets(ctx, game);
+    this.drawBuildings(ctx, game, cam);
+    this.drawProps(ctx, game, cam, true); // palms overhang roofs a little
 
-function nearIntersection(world, x, y) {
-  const mx = ((x % PITCH) + PITCH) % PITCH;
-  const my = ((y % PITCH) + PITCH) % PITCH;
-  return mx < ROAD_W + 8 && my < ROAD_W + 8;
-}
-
-function drawBlocks(ctx, G, vx, vy, vw, vh) {
-  const world = G.world;
-  for (const b of world.blocks) {
-    if (b.x + b.w < vx || b.x > vx + vw || b.y + b.h < vy || b.y > vy + vh) continue;
-    // Sidewalk slab first.
-    ctx.fillStyle = PAL.sidewalkEdge;
-    ctx.fillRect(b.x - 3, b.y - 3, b.w + 6, b.h + 6);
-    ctx.fillStyle = b.kind === 'park' ? PAL.grass : (b.kind === 'plaza' ? PAL.plaza : PAL.sidewalk);
-    ctx.fillRect(b.x, b.y, b.w, b.h);
-    if (b.kind === 'park') {
-      ctx.strokeStyle = PAL.parkPath;
-      ctx.lineWidth = 10;
-      ctx.beginPath();
-      ctx.moveTo(b.x + 10, b.y + b.h / 2); ctx.lineTo(b.x + b.w - 10, b.y + b.h / 2);
-      ctx.moveTo(b.x + b.w / 2, b.y + 10); ctx.lineTo(b.x + b.w / 2, b.y + b.h - 10);
-      ctx.stroke();
-    }
-    if (b.kind === 'garage' || b.kind === 'docks' || b.kind === 'depot') {
-      ctx.fillStyle = 'rgba(70,64,74,0.35)';
-      ctx.fillRect(b.x + 16, b.y + 150, b.w - 32, b.h - 170); // yard tarmac
-    }
-    // Block name painted small on the pavement — Palmira's street identity.
-    ctx.fillStyle = 'rgba(90,70,50,0.5)';
-    ctx.font = '600 10px system-ui, sans-serif';
-    ctx.fillText(b.name.toUpperCase(), b.x + 10, b.y + b.h - 8);
-  }
-  // Buildings: long shadow, walls, roof detail, lit windows.
-  for (const b of world.buildings) {
-    if (b.x + b.w < vx - 40 || b.x > vx + vw || b.y + b.h < vy - 40 || b.y > vy + vh) continue;
-    ctx.fillStyle = PAL.shadow;
-    ctx.fillRect(b.x + 16, b.y + 22, b.w, b.h);
-    ctx.fillStyle = b.color;
-    ctx.fillRect(b.x, b.y, b.w, b.h);
-    ctx.fillStyle = b.roof;
-    ctx.fillRect(b.x + 5, b.y + 5, b.w - 10, b.h - 10);
-    ctx.fillStyle = 'rgba(255,255,255,0.14)';
-    ctx.fillRect(b.x + 5, b.y + 5, b.w - 10, 6);
-    // Window grid — some lit at dusk.
-    const cols = Math.max(2, Math.floor(b.w / 26));
-    const rows = Math.max(2, Math.floor(b.h / 24));
-    for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) {
-      const wx = b.x + 12 + i * ((b.w - 24) / Math.max(1, cols - 1)) - 4;
-      const wy = b.y + 12 + j * ((b.h - 24) / Math.max(1, rows - 1)) - 4;
-      const lit = ((i * 7 + j * 13 + b.x) % 5 === 0);
-      ctx.fillStyle = G.dusk && lit ? '#ffd76a' : 'rgba(38,50,66,0.55)';
-      ctx.fillRect(wx, wy, 8, 8);
-    }
-    if (b.sign) {
-      ctx.fillStyle = 'rgba(30,26,36,0.85)';
-      const tw = ctx.measureText(b.sign).width + 16;
-      ctx.fillRect(b.x + b.w / 2 - tw / 2, b.y + b.h - 24, tw, 16);
-      ctx.fillStyle = '#ffd76a';
-      ctx.font = '700 10px system-ui, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(b.sign, b.x + b.w / 2, b.y + b.h - 12);
-      ctx.textAlign = 'left';
-    }
-    if (b.kind === 'garage') {
-      ctx.fillStyle = '#3c3844';
-      ctx.fillRect(b.x + 30, b.y + b.h - 34, 120, 30);
-      ctx.fillStyle = '#ffd76a';
-      for (let i = 0; i < 5; i++) ctx.fillRect(b.x + 38 + i * 23, b.y + b.h - 28, 14, 18);
-    }
-  }
-}
-
-function drawBeachProps(ctx, G) {
-  for (const prop of G.world.props) {
-    if (prop.kind === 'umbrella') {
-      ctx.fillStyle = 'rgba(46,26,54,0.2)';
-      ctx.beginPath(); ctx.ellipse(prop.x + 5, prop.y + 6, 15, 6, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = prop.color;
-      ctx.beginPath(); ctx.arc(prop.x, prop.y, 14, Math.PI, 0); ctx.fill();
-      ctx.strokeStyle = '#7a5a34';
-      ctx.beginPath(); ctx.moveTo(prop.x, prop.y); ctx.lineTo(prop.x, prop.y + 10); ctx.stroke();
-    }
-  }
-}
-
-function drawProps(ctx, G, vx, vy, vw, vh) {
-  const world = G.world;
-  for (const prop of world.props) {
-    if (prop.x < vx - 40 || prop.x > vx + vw || prop.y < vy - 40 || prop.y > vy + vh) continue;
-    if (prop.kind === 'crates') {
-      ctx.fillStyle = '#9a7448';
-      ctx.fillRect(prop.x, prop.y, 22, 22);
-      ctx.fillStyle = '#7d5c36';
-      ctx.fillRect(prop.x + 6, prop.y - 14, 20, 20);
-      ctx.strokeStyle = 'rgba(60,40,20,0.6)';
-      ctx.strokeRect(prop.x + 0.5, prop.y + 0.5, 22, 22);
-    } else if (prop.kind === 'container') {
-      ctx.fillStyle = PAL.shadow;
-      ctx.fillRect(prop.x + 8, prop.y + 10, 40, 24);
-      ctx.fillStyle = prop.color;
-      ctx.fillRect(prop.x, prop.y, 40, 24);
-      ctx.fillStyle = 'rgba(0,0,0,0.22)';
-      for (let i = 0; i < 4; i++) ctx.fillRect(prop.x + 4 + i * 10, prop.y + 3, 3, 18);
-    } else if (prop.kind === 'fountain') {
-      ctx.fillStyle = '#7fb5d5';
-      ctx.beginPath(); ctx.arc(prop.x, prop.y, 21, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#a8d4ea';
-      ctx.beginPath(); ctx.arc(prop.x, prop.y, 13, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = 'rgba(255,255,255,0.8)';
-      ctx.beginPath(); ctx.arc(prop.x + Math.sin(G.time * 3) * 3, prop.y - 3, 3.4, 0, Math.PI * 2); ctx.fill();
-    } else if (prop.kind === 'stall') {
-      ctx.fillStyle = prop.color;
-      ctx.fillRect(prop.x, prop.y, 44, 8);
-      ctx.fillStyle = '#8a6a4a';
-      ctx.fillRect(prop.x + 4, prop.y + 8, 36, 18);
-    }
-  }
-  // Palms: trunk with lean, fronds as arcs.
-  for (const palm of world.palms) {
-    if (palm.x < vx - 40 || palm.x > vx + vw || palm.y < vy - 40 || palm.y > vy + vh) continue;
-    const s = palm.s;
-    ctx.fillStyle = 'rgba(46,26,54,0.28)';
-    ctx.beginPath(); ctx.ellipse(palm.x + 12 * s, palm.y + 14 * s, 16 * s, 6 * s, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = '#8a6a4a';
-    ctx.lineWidth = 4 * s;
-    ctx.beginPath();
-    ctx.moveTo(palm.x, palm.y);
-    ctx.quadraticCurveTo(palm.x + palm.lean * 20, palm.y - 12 * s, palm.x + palm.lean * 34, palm.y - 20 * s);
-    ctx.stroke();
-    const tx = palm.x + palm.lean * 34, ty = palm.y - 20 * s;
-    ctx.strokeStyle = '#4d8f3f';
-    ctx.lineWidth = 3 * s;
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2 + palm.lean;
-      ctx.beginPath();
-      ctx.moveTo(tx, ty);
-      ctx.quadraticCurveTo(tx + Math.cos(a) * 13 * s, ty + Math.sin(a) * 8 * s - 4, tx + Math.cos(a) * 22 * s, ty + Math.sin(a) * 13 * s + 4);
-      ctx.stroke();
-    }
-  }
-  // Streetlights: pole + warm lamp (glows at dusk in the overlay pass).
-  for (const l of world.lights) {
-    if (l.x < vx - 20 || l.x > vx + vw || l.y < vy - 20 || l.y > vy + vh) continue;
-    ctx.fillStyle = '#3c4048';
-    ctx.fillRect(l.x - 1.5, l.y - 8, 3, 12);
-    ctx.fillStyle = G.dusk ? '#ffe9a3' : '#e8e2cc';
-    ctx.beginPath(); ctx.arc(l.x, l.y - 10, 3.4, 0, Math.PI * 2); ctx.fill();
-  }
-}
-
-function drawMarker(ctx, G) {
-  const obj = G.objective;
-  if (!obj || G.state !== 'playing') return;
-  const bob = Math.sin(G.time * 3.2) * 5;
-  const x = obj.x, y = obj.y - 46 + bob;
-  // Pillar of light so the goal reads across the city.
-  const grad = ctx.createLinearGradient(0, obj.y - 130, 0, obj.y);
-  grad.addColorStop(0, 'rgba(255,199,44,0)');
-  grad.addColorStop(1, 'rgba(255,199,44,0.35)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(x - 9, obj.y - 130, 18, 130);
-  ctx.fillStyle = 'rgba(255,199,44,0.3)';
-  ctx.beginPath(); ctx.ellipse(obj.x, obj.y, 30, 12, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = '#ffc72c';
-  ctx.lineWidth = 2.5;
-  ctx.beginPath(); ctx.ellipse(obj.x, obj.y, 30 + Math.sin(G.time * 3.2) * 4, 12, 0, 0, Math.PI * 2); ctx.stroke();
-  ctx.fillStyle = '#ffc72c';
-  ctx.beginPath();
-  ctx.moveTo(x, y + 20); ctx.lineTo(x - 11, y); ctx.lineTo(x + 11, y); ctx.closePath(); ctx.fill();
-  ctx.fillStyle = '#221c10';
-  ctx.font = '800 10px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText(obj.label || 'GO', x, y + 9);
-  ctx.textAlign = 'left';
-}
-
-export function drawCar(ctx, G, car) {
-  const spec = car.spec;
-  ctx.save();
-  ctx.translate(car.x, car.y);
-  // Long golden-hour shadow.
-  ctx.fillStyle = PAL.shadow;
-  ctx.save();
-  ctx.rotate(car.angle);
-  roundRect(ctx, -spec.w / 2 + 7, -spec.h / 2 + 10, spec.w, spec.h, 5);
-  ctx.fill();
-  ctx.restore();
-
-  if (car.role === 'police' && (car.driver === 'police' || car.roadblock)) {
-    // Flashing light bar glow.
-    const phase = Math.floor(G.time * 6 + car.lightPhase) % 2;
-    ctx.fillStyle = phase ? 'rgba(255,60,60,0.4)' : 'rgba(60,120,255,0.4)';
-    ctx.beginPath(); ctx.arc(0, 0, 30, 0, Math.PI * 2); ctx.fill();
-  }
-  ctx.rotate(car.angle);
-  // Wheels.
-  ctx.fillStyle = '#17181c';
-  const ww = spec.w * 0.24, wh = 4.6;
-  for (const [wx, wy] of [[-spec.w * 0.3, -spec.h / 2 - 1], [spec.w * 0.3, -spec.h / 2 - 1], [-spec.w * 0.3, spec.h / 2 - 3.6], [spec.w * 0.3, spec.h / 2 - 3.6]]) {
-    ctx.fillRect(wx - ww / 2, wy, ww, wh);
-  }
-  // Body.
-  ctx.fillStyle = car.wrecked ? shade(car.color, 0.55) : car.color;
-  roundRect(ctx, -spec.w / 2, -spec.h / 2, spec.w, spec.h, 5);
-  ctx.fill();
-  ctx.fillStyle = 'rgba(255,255,255,0.18)';
-  roundRect(ctx, -spec.w / 2, -spec.h / 2, spec.w, spec.h * 0.4, 5);
-  ctx.fill();
-  if (car.role === 'police') {
-    ctx.fillStyle = '#20242b';
-    ctx.fillRect(-spec.w * 0.28, -spec.h / 2, spec.w * 0.2, spec.h);
-    ctx.fillRect(spec.w * 0.16, -spec.h / 2, spec.w * 0.14, spec.h);
-    ctx.fillStyle = '#f2f2f2';
-    ctx.font = '800 7px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('PPD', 0, 2.5);
-    ctx.textAlign = 'left';
-    const phase = Math.floor(G.time * 6 + car.lightPhase) % 2;
-    ctx.fillStyle = phase ? '#ff4040' : '#ffe9a3';
-    ctx.fillRect(-7, -spec.h / 2 + 2, 6, 4);
-    ctx.fillStyle = phase ? '#ffe9a3' : '#4080ff';
-    ctx.fillRect(1, -spec.h / 2 + 2, 6, 4);
-    ctx.fillStyle = phase ? '#ff4040' : '#4080ff';
-    ctx.fillRect(-7, spec.h / 2 - 6, 6, 4);
-    ctx.fillStyle = phase ? '#4080ff' : '#ff4040';
-    ctx.fillRect(1, spec.h / 2 - 6, 6, 4);
-  }
-  if (car.type === 'taxi') {
-    ctx.fillStyle = '#20242b';
-    ctx.fillRect(-4, -4, 9, 8);
-    ctx.fillStyle = '#ffd76a';
-    ctx.font = '800 6px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('TAXI', 0.5, 2);
-    ctx.textAlign = 'left';
-  }
-  if (car.type === 'van') {
-    ctx.fillStyle = 'rgba(255,255,255,0.25)';
-    ctx.fillRect(-spec.w * 0.42, -spec.h * 0.32, spec.w * 0.5, spec.h * 0.64);
-  }
-  // Cabin glass.
-  ctx.fillStyle = 'rgba(24,34,48,0.9)';
-  roundRect(ctx, -spec.w * 0.16, -spec.h * 0.36, spec.w * 0.34, spec.h * 0.72, 3);
-  ctx.fill();
-  ctx.fillStyle = 'rgba(140,200,235,0.5)';
-  ctx.fillRect(spec.w * 0.08, -spec.h * 0.32, 3.4, spec.h * 0.64);
-  // Headlights and tail lights.
-  ctx.fillStyle = (G.dusk || car.role === 'police') ? '#fff3b0' : '#e8e2cc';
-  ctx.fillRect(spec.w / 2 - 2.4, -spec.h * 0.32, 2.6, 4.4);
-  ctx.fillRect(spec.w / 2 - 2.4, spec.h * 0.32 - 4.4, 2.6, 4.4);
-  ctx.fillStyle = '#c0272d';
-  ctx.fillRect(-spec.w / 2, -spec.h * 0.32, 2.2, 4.4);
-  ctx.fillRect(-spec.w / 2, spec.h * 0.32 - 4.4, 2.2, 4.4);
-  // Damage: crumple shading.
-  if (car.health < 60) {
-    ctx.fillStyle = 'rgba(30,28,34,0.35)';
-    ctx.beginPath(); ctx.arc(spec.w * 0.3, spec.h * 0.2, 6 + (60 - car.health) * 0.1, 0, Math.PI * 2); ctx.fill();
-  }
-  if (car === G.player.car) {
-    ctx.strokeStyle = 'rgba(255,255,255,0.65)';
-    ctx.lineWidth = 1.6;
-    roundRect(ctx, -spec.w / 2 - 2.5, -spec.h / 2 - 2.5, spec.w + 5, spec.h + 5, 6);
-    ctx.stroke();
-  }
-  ctx.restore();
-}
-
-export function drawPed(ctx, G, ped) {
-  ctx.save();
-  ctx.translate(ped.x, ped.y);
-  ctx.fillStyle = 'rgba(46,26,54,0.3)';
-  ctx.beginPath(); ctx.ellipse(4, 6, 8, 3.4, 0, 0, Math.PI * 2); ctx.fill();
-  if (ped.state === 'down') {
-    ctx.rotate(Math.PI / 2);
-    ctx.fillStyle = ped.shirt;
-    roundRect(ctx, -8, -4.6, 16, 9.2, 4);
-    ctx.fill();
-    ctx.fillStyle = ped.skin;
-    ctx.beginPath(); ctx.arc(10.5, 0, 4, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
-    return;
-  }
-  const swing = Math.sin(ped.walkPhase) * 3.4;
-  const moving = Math.hypot(ped.vx, ped.vy) > 4;
-  ctx.rotate(ped.angle);
-  // Legs.
-  ctx.strokeStyle = ped.isOfficer ? '#1b2432' : ped.pants;
-  ctx.lineWidth = 3.2;
-  ctx.beginPath();
-  ctx.moveTo(-2, 0); ctx.lineTo(-4 + (moving ? swing : 0), -4.6);
-  ctx.moveTo(-2, 0); ctx.lineTo(-4 - (moving ? swing : 0), 4.6);
-  ctx.stroke();
-  // Torso.
-  ctx.fillStyle = ped.isOfficer ? '#20304a' : ped.shirt;
-  roundRect(ctx, -6.4, -5.4, 12.4, 10.8, 4);
-  ctx.fill();
-  if (ped.isOfficer) {
-    ctx.fillStyle = '#ffd76a';
-    ctx.fillRect(0, -3.4, 2.6, 2.6); // badge
-    ctx.fillStyle = '#16222e';
-    roundRect(ctx, 4, -5.6, 6.4, 11.2, 2.6);
-    ctx.fill(); // cap brim reads as hat from above
-  }
-  // Head.
-  ctx.fillStyle = ped.skin;
-  ctx.beginPath(); ctx.arc(3.4, 0, 4.1, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = 'rgba(40,26,18,0.85)';
-  ctx.beginPath(); ctx.arc(2.2, 0, 3.2, Math.PI * 0.6, Math.PI * 1.7); ctx.fill();
-  ctx.restore();
-}
 
-export function drawPlayer(ctx, G) {
-  const p = G.player;
-  ctx.save();
-  ctx.translate(p.x, p.y);
-  ctx.fillStyle = 'rgba(46,26,54,0.34)';
-  ctx.beginPath(); ctx.ellipse(4, 6, 8.6, 3.6, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.rotate(p.angle);
-  const swing = p.moving ? Math.sin(p.walkPhase) * 3.8 : 0;
-  ctx.strokeStyle = '#263238';
-  ctx.lineWidth = 3.6;
-  ctx.beginPath();
-  ctx.moveTo(-2, 0); ctx.lineTo(-4.4 + swing, -5);
-  ctx.moveTo(-2, 0); ctx.lineTo(-4.4 - swing, 5);
-  ctx.stroke();
-  // Rico's coral jacket — he reads at a glance.
-  ctx.fillStyle = p.hurtT > 0 ? '#ff6b5e' : '#e4572e';
-  roundRect(ctx, -7, -6, 13.6, 12, 4.4);
-  ctx.fill();
-  ctx.fillStyle = '#fdf0d5';
-  ctx.fillRect(-1, -6, 3, 12);
-  ctx.fillStyle = '#f2c79b';
-  ctx.beginPath(); ctx.arc(3.6, 0, 4.4, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = '#20242b';
-  ctx.beginPath(); ctx.arc(2.2, 0, 3.4, Math.PI * 0.55, Math.PI * 1.75); ctx.fill();
-  if (p.hasPistol) {
-    ctx.fillStyle = '#17181c';
-    ctx.fillRect(8, -1.6, 9, 3.2);
-  } else if (p.meleeT > 0.12) {
-    ctx.strokeStyle = '#f2c79b';
-    ctx.lineWidth = 3.2;
-    ctx.beginPath(); ctx.moveTo(6, 3); ctx.lineTo(13, 8); ctx.stroke();
-  }
-  ctx.restore();
-  // Bust ring: shows how close the pin is.
-  if (p.bustMeter > 0.03 && G.stars > 0) {
-    ctx.strokeStyle = 'rgba(64,128,255,0.9)';
-    ctx.lineWidth = 3;
+    this.drawDayNight(ctx, game);
+    this.drawVignette(ctx, game);
+  },
+
+  visible: function (cam, x, y, pad) {
+    return x > cam.x - pad && x < cam.x + CV.VIEW_W + pad &&
+           y > cam.y - pad && y < cam.y + CV.VIEW_H + pad;
+  },
+
+  drawGround: function (ctx, game, cam) {
+    // Water beyond the island edge, sand rim, then grass.
+    ctx.fillStyle = CV.COLORS.water;
+    ctx.fillRect(cam.x - 40, cam.y - 40, CV.VIEW_W + 80, CV.VIEW_H + 80);
+    ctx.fillStyle = CV.COLORS.sand;
+    ctx.fillRect(-26, -26, CV.WORLD_W + 52, CV.WORLD_H + 52);
+    ctx.fillStyle = CV.COLORS.grass;
+    ctx.fillRect(0, 0, CV.WORLD_W, CV.WORLD_H);
+
+    // Parks are a deeper green with mow stripes.
+    var parks = CV.World.parks;
+    for (var i = 0; i < parks.length; i++) {
+      var pk = parks[i];
+      if (!this.visible(cam, pk.x + pk.w / 2, pk.y + pk.h / 2, 200)) continue;
+      ctx.fillStyle = CV.COLORS.grassDark;
+      ctx.fillRect(pk.x, pk.y, pk.w, pk.h);
+      ctx.fillStyle = 'rgba(255,255,255,0.05)';
+      for (var s = 0; s < pk.w; s += 22) {
+        if ((s / 22) % 2 === 0) ctx.fillRect(pk.x + s, pk.y, 11, pk.h);
+      }
+    }
+
+    // Block slabs (sidewalks) under the buildings.
+    ctx.fillStyle = CV.COLORS.sidewalk;
+    for (var by = 0; by < CV.ROWS; by++) {
+      for (var bx = 0; bx < CV.COLS; bx++) {
+        var x = CV.ROAD + bx * CV.PITCH - CV.SIDEWALK;
+        var y = CV.ROAD + by * CV.PITCH - CV.SIDEWALK;
+        var w = CV.BLOCK + CV.SIDEWALK * 2;
+        if (!this.visible(cam, x + w / 2, y + w / 2, 200)) continue;
+        ctx.fillRect(x, y, w, w);
+      }
+    }
+  },
+
+  drawRoads: function (ctx, game, cam) {
+    ctx.fillStyle = CV.COLORS.road;
+    var i, x, y;
+    for (i = 0; i <= CV.COLS; i++) {
+      x = i * CV.PITCH;
+      if (x + CV.ROAD < cam.x || x > cam.x + CV.VIEW_W) continue;
+      ctx.fillRect(x, 0, CV.ROAD, CV.WORLD_H);
+    }
+    for (i = 0; i <= CV.ROWS; i++) {
+      y = i * CV.PITCH;
+      if (y + CV.ROAD < cam.y || y > cam.y + CV.VIEW_H) continue;
+      ctx.fillRect(0, y, CV.WORLD_W, CV.ROAD);
+    }
+    // Centre dashes.
+    ctx.fillStyle = CV.COLORS.roadLine;
+    for (i = 0; i <= CV.COLS; i++) {
+      x = i * CV.PITCH + CV.ROAD / 2 - 1;
+      if (x < cam.x - 4 || x > cam.x + CV.VIEW_W + 4) continue;
+      for (y = 8; y < CV.WORLD_H; y += 30) {
+        if (y > cam.y - 20 && y < cam.y + CV.VIEW_H + 20) ctx.fillRect(x, y, 2, 14);
+      }
+    }
+    for (i = 0; i <= CV.ROWS; i++) {
+      y = i * CV.PITCH + CV.ROAD / 2 - 1;
+      if (y < cam.y - 4 || y > cam.y + CV.VIEW_H + 4) continue;
+      for (x = 8; x < CV.WORLD_W; x += 30) {
+        if (x > cam.x - 20 && x < cam.x + CV.VIEW_W + 20) ctx.fillRect(x, y, 14, 2);
+      }
+    }
+    // Crosswalks at intersections.
+    ctx.fillStyle = 'rgba(240,240,240,0.5)';
+    for (var ix = 0; ix <= CV.COLS; ix++) {
+      for (var iy = 0; iy <= CV.ROWS; iy++) {
+        var cx = ix * CV.PITCH;
+        var cy = iy * CV.PITCH;
+        if (!this.visible(cam, cx + CV.ROAD / 2, cy + CV.ROAD / 2, 60)) continue;
+        for (var s2 = 0; s2 < 4; s2++) {
+          ctx.fillRect(cx + 4 + s2 * 10, cy - 5, 5, 4);
+          ctx.fillRect(cx + 4 + s2 * 10, cy + CV.ROAD + 1, 5, 4);
+        }
+      }
+    }
+  },
+
+  drawBuildings: function (ctx, game, cam) {
+    var list = CV.World.buildings;
+    var lift = 10 + game.cameraLift; // fake height
+    for (var i = 0; i < list.length; i++) {
+      var b = list[i];
+      if (!this.visible(cam, b.x + b.w / 2, b.y + b.h / 2, 220)) continue;
+      // Shadow / side wall.
+      ctx.fillStyle = 'rgba(0,0,0,0.28)';
+      ctx.fillRect(b.x + 5, b.y + 7, b.w, b.h);
+      ctx.fillStyle = this.shade(b.color, -28);
+      ctx.fillRect(b.x - lift * 0.4, b.y + b.h - lift * 0.4, b.w, lift * 0.4 + 2);
+      // Roof.
+      ctx.fillStyle = b.roof;
+      ctx.fillRect(b.x - lift * 0.4, b.y - lift * 0.4, b.w, b.h);
+      ctx.fillStyle = b.color;
+      ctx.fillRect(b.x - lift * 0.4 + 3, b.y - lift * 0.4 + 3, b.w - 6, b.h - 6);
+      // Roof details: AC boxes and a parapet line.
+      ctx.fillStyle = 'rgba(0,0,0,0.18)';
+      ctx.fillRect(b.x + b.w * 0.18, b.y + b.h * 0.16, 10, 8);
+      if (b.w > 60) ctx.fillRect(b.x + b.w * 0.62, b.y + b.h * 0.55, 12, 9);
+      // Windows: lit at night, glassy by day.
+      var night = game.nightAmount;
+      var cols = Math.max(2, Math.floor(b.w / 15));
+      var rows = Math.max(2, Math.floor(b.h / 15));
+      for (var wx = 0; wx < cols; wx++) {
+        for (var wy = 0; wy < rows; wy++) {
+          var seedv = ((wx * 31 + wy * 17 + i * 7) % 10) / 10;
+          var lit = seedv < night * 0.75;
+          ctx.fillStyle = lit ? 'rgba(255,214,120,0.95)' : 'rgba(38,52,66,0.55)';
+          ctx.fillRect(b.x + 6 + wx * 15, b.y + 6 + wy * 15, 7, 9);
+        }
+      }
+      if (b.awning) {
+        ctx.fillStyle = '#e74c3c';
+        ctx.fillRect(b.x - 2, b.y + b.h - 4, b.w + 4, 6);
+      }
+    }
+  },
+
+  shade: function (hex, amt) {
+    var n = parseInt(hex.slice(1), 16);
+    var r = CV.clamp((n >> 16) + amt, 0, 255);
+    var g = CV.clamp(((n >> 8) & 0xff) + amt, 0, 255);
+    var bl = CV.clamp((n & 0xff) + amt, 0, 255);
+    return 'rgb(' + r + ',' + g + ',' + bl + ')';
+  },
+
+  drawProps: function (ctx, game, cam, tall) {
+    var props = CV.World.props;
+    for (var i = 0; i < props.length; i++) {
+      var p = props[i];
+      if (!this.visible(cam, p.x, p.y, 60)) continue;
+      var isTall = p.kind === 'palm' || p.kind === 'fountain';
+      if (tall !== isTall) continue;
+      if (p.kind === 'palm') {
+        ctx.fillStyle = 'rgba(0,0,0,0.2)';
+        ctx.beginPath(); ctx.ellipse(p.x + 3, p.y + 4, 9, 5, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = '#8a6d3b';
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + 2, p.y - 6); ctx.stroke();
+        ctx.strokeStyle = '#2e8b57';
+        ctx.lineWidth = 2.5;
+        for (var f = 0; f < 6; f++) {
+          var a = (f / 6) * Math.PI * 2 + i;
+          ctx.beginPath();
+          ctx.moveTo(p.x + 2, p.y - 6);
+          ctx.quadraticCurveTo(
+            p.x + 2 + Math.cos(a) * 8, p.y - 10 + Math.sin(a) * 3,
+            p.x + 2 + Math.cos(a) * 13, p.y - 4 + Math.sin(a) * 6);
+          ctx.stroke();
+        }
+      } else if (p.kind === 'lamp') {
+        ctx.fillStyle = '#444';
+        ctx.fillRect(p.x - 1, p.y - 8, 2, 10);
+        var glow = game.nightAmount;
+        ctx.fillStyle = glow > 0.4 ? '#ffe9a8' : '#cfd8dc';
+        ctx.beginPath(); ctx.arc(p.x, p.y - 10, 3, 0, Math.PI * 2); ctx.fill();
+        if (glow > 0.4) {
+          ctx.fillStyle = 'rgba(255,233,168,0.14)';
+          ctx.beginPath(); ctx.arc(p.x, p.y - 8, 16, 0, Math.PI * 2); ctx.fill();
+        }
+      } else if (p.kind === 'hydrant') {
+        ctx.fillStyle = '#d23c2e';
+        ctx.fillRect(p.x - 3, p.y - 4, 6, 8);
+        ctx.fillRect(p.x - 1, p.y - 7, 2, 3);
+      } else if (p.kind === 'crate') {
+        ctx.fillStyle = '#a9805a';
+        ctx.fillRect(p.x - 8, p.y - 8, 16, 16);
+        ctx.strokeStyle = '#7c5a3c';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(p.x - 8, p.y - 8, 16, 16);
+      } else if (p.kind === 'fountain') {
+        ctx.fillStyle = '#90a4ae';
+        ctx.beginPath(); ctx.arc(p.x, p.y, 15, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#4fc3f7';
+        ctx.beginPath(); ctx.arc(p.x, p.y, 11, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#e1f5fe';
+        ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+  },
+
+  drawMarker: function (ctx, game) {
+    var mk = CV.Missions.marker;
+    if (!mk || game.state !== 'play') return;
+    var bob = Math.sin(game.time * 4) * 5;
+    ctx.fillStyle = 'rgba(241,196,15,0.25)';
+    ctx.beginPath(); ctx.arc(mk.x, mk.y, 30 + bob, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#f1c40f';
+    ctx.beginPath(); ctx.arc(mk.x, mk.y, 17 + bob * 0.4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#7d6608';
+    ctx.font = 'bold 15px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('!', mk.x, mk.y + 5);
+    // A pillar of light so it reads across the city.
+    var grad = ctx.createLinearGradient(0, mk.y - 190, 0, mk.y);
+    grad.addColorStop(0, 'rgba(241,196,15,0)');
+    grad.addColorStop(1, 'rgba(241,196,15,0.30)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(mk.x - 7, mk.y - 190, 14, 190);
+  },
+
+  drawPickups: function (ctx, game) {
+    var list = game.pickups || [];
+    for (var i = 0; i < list.length; i++) {
+      var pk = list[i];
+      if (pk.taken) continue;
+      var bob = Math.sin(game.time * 5 + i * 1.7) * 3;
+      ctx.fillStyle = 'rgba(46,204,113,0.25)';
+      ctx.beginPath(); ctx.arc(pk.x, pk.y, 20 + bob, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#27ae60';
+      CV.Render.roundRect(ctx, pk.x - 8, pk.y - 6 + bob * 0.4, 16, 11, 2);
+      ctx.fill();
+      ctx.fillStyle = '#d5f5e3';
+      ctx.font = 'bold 9px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('$', pk.x, pk.y + 3 + bob * 0.4);
+    }
+  },
+
+  drawCarShape: function (ctx, car, game) {
+    ctx.save();
+    ctx.translate(car.x, car.y);
+    ctx.rotate(car.angle);
+    var L = CV.CAR_W;
+    var Wd = CV.CAR_H;
+    // Headlight cones after dark.
+    if (game && game.nightAmount > 0.3 && car.hp > 0) {
+      ctx.fillStyle = 'rgba(255,240,180,' + (0.13 * game.nightAmount) + ')';
+      ctx.beginPath();
+      ctx.moveTo(L / 2, -5);
+      ctx.lineTo(L / 2 + 95, -24);
+      ctx.lineTo(L / 2 + 95, 24);
+      ctx.lineTo(L / 2, 5);
+      ctx.closePath();
+      ctx.fill();
+    }
+    // Shadow.
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.fillRect(-L / 2 + 3, -Wd / 2 + 4, L, Wd);
+    // Body.
+    ctx.fillStyle = car.flash > 0 ? '#ffffff' : car.color;
+    this.roundRect(ctx, -L / 2, -Wd / 2, L, Wd, 5);
+    ctx.fill();
+    // Police livery stripe.
+    if (car.police) {
+      ctx.fillStyle = '#2471a3';
+      ctx.fillRect(-L / 2, -3, L, 6);
+    }
+    // Cabin / glass.
+    ctx.fillStyle = 'rgba(24,36,48,0.85)';
+    this.roundRect(ctx, -L * 0.16, -Wd / 2 + 3, L * 0.34, Wd - 6, 3);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(140,200,235,0.5)';
+    ctx.fillRect(L * 0.10, -Wd / 2 + 4, 4, Wd - 8);
+    // Headlights / taillights.
+    ctx.fillStyle = '#fff7ae';
+    ctx.fillRect(L / 2 - 2, -Wd / 2 + 2, 2, 4);
+    ctx.fillRect(L / 2 - 2, Wd / 2 - 6, 2, 4);
+    ctx.fillStyle = car.brake ? '#ff8a7a' : '#e74c3c';
+    var tl = car.brake ? 3.4 : 2;
+    ctx.fillRect(-L / 2 - (tl - 2), -Wd / 2 + 2, tl, 4);
+    ctx.fillRect(-L / 2 - (tl - 2), Wd / 2 - 6, tl, 4);
+    // Wheels.
+    ctx.fillStyle = '#15181c';
+    ctx.fillRect(-L / 2 + 4, -Wd / 2 - 2, 8, 3);
+    ctx.fillRect(L / 2 - 12, -Wd / 2 - 2, 8, 3);
+    ctx.fillRect(-L / 2 + 4, Wd / 2 - 1, 8, 3);
+    ctx.fillRect(L / 2 - 12, Wd / 2 - 1, 8, 3);
+    // Siren lights.
+    if (car.police) {
+      var phase = Math.sin(car.siren) > 0;
+      ctx.fillStyle = phase ? '#ff3b30' : '#5dade2';
+      ctx.fillRect(-6, -Wd / 2 + 3, 5, 4);
+      ctx.fillStyle = phase ? '#5dade2' : '#ff3b30';
+      ctx.fillRect(1, -Wd / 2 + 3, 5, 4);
+    }
+    ctx.restore();
+    // Mission marker ring.
+    if (car.missionCar) {
+      ctx.strokeStyle = '#f1c40f';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(car.x, car.y, 30, 0, Math.PI * 2); ctx.stroke();
+    }
+    // Damage smoke.
+    if (car.smoke > 0.3) {
+      ctx.fillStyle = 'rgba(60,60,60,' + (0.25 * car.smoke) + ')';
+      var s = 6 + Math.sin(game.time * 9 + car.x) * 2;
+      ctx.beginPath(); ctx.arc(car.x, car.y - 12, s, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(car.x + 5, car.y - 20, s * 1.3, 0, Math.PI * 2); ctx.fill();
+    }
+  },
+
+  roundRect: function (ctx, x, y, w, h, r) {
     ctx.beginPath();
-    ctx.arc(p.x, p.y, 17, -Math.PI / 2, -Math.PI / 2 + p.bustMeter * Math.PI * 2);
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  },
+
+  drawCars: function (ctx, game, cam) {
+    var cars = CV.Traffic.cars;
+    for (var i = 0; i < cars.length; i++) {
+      if (!this.visible(cam, cars[i].x, cars[i].y, 60)) continue;
+      this.drawCarShape(ctx, cars[i], game);
+    }
+  },
+
+  drawPerson: function (ctx, x, y, angle, shirt, skin, opts) {
+    opts = opts || {};
+    // Shadow.
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.beginPath(); ctx.ellipse(x + 2, y + 3, 7, 4, 0, 0, Math.PI * 2); ctx.fill();
+    if (opts.down) {
+      // Fallen: body stretched along the ground.
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      ctx.fillStyle = shirt;
+      ctx.fillRect(-11, -4, 20, 8);
+      ctx.fillStyle = skin;
+      ctx.beginPath(); ctx.arc(13, 0, 4.5, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      return;
+    }
+    // Legs (walk cycle swing).
+    var swing = opts.moving ? Math.sin(opts.phase || 0) * 4 : 0;
+    ctx.strokeStyle = '#2f3640';
+    ctx.lineWidth = 3;
+    var fx = Math.cos(angle);
+    var fy = Math.sin(angle);
+    var px = -fy;
+    var py = fx;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + fx * swing + px * 2.5, y + fy * swing + py * 2.5);
+    ctx.moveTo(x, y);
+    ctx.lineTo(x - fx * swing - px * 2.5, y - fy * swing - py * 2.5);
     ctx.stroke();
-  }
-}
+    // Torso.
+    ctx.fillStyle = shirt;
+    ctx.beginPath(); ctx.arc(x, y, 6.5, 0, Math.PI * 2); ctx.fill();
+    // Head.
+    ctx.fillStyle = skin;
+    ctx.beginPath(); ctx.arc(x + fx * 1.5, y + fy * 1.5, 4.2, 0, Math.PI * 2); ctx.fill();
+    // Punch / gun arm.
+    if (opts.punch) {
+      ctx.strokeStyle = skin;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + fx * 15, y + fy * 15);
+      ctx.stroke();
+    }
+    if (opts.gun) {
+      ctx.strokeStyle = skin;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + fx * 10, y + fy * 10);
+      ctx.stroke();
+      ctx.fillStyle = '#222';
+      ctx.fillRect(x + fx * 10 - 1.5, y + fy * 10 - 1.5, 4, 3);
+    }
+  },
 
-function drawBullets(ctx, G) {
-  ctx.fillStyle = '#ffe9a3';
-  for (const b of G.bullets) {
-    ctx.fillRect(b.x - 3, b.y - 1.2, 6, 2.4);
-    ctx.fillStyle = 'rgba(255,233,163,0.35)';
-    ctx.fillRect(b.x - 9, b.y - 0.8, 6, 1.6);
-    ctx.fillStyle = '#ffe9a3';
-  }
-}
+  drawPeds: function (ctx, game, cam) {
+    var list = CV.Pedestrians.list;
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
+      if (!this.visible(cam, p.x, p.y, 40)) continue;
+      this.drawPerson(ctx, p.x, p.y, p.angle, p.color, p.skin, {
+        down: p.state === 'down',
+        moving: p.state === 'walk' || p.state === 'flee',
+        phase: p.walkPhase || 0,
+        gun: !!p.hostile && p.state !== 'down'
+      });
+      if (p.special === 'target' || p.special === 'thug') {
+        ctx.fillStyle = p.special === 'thug' ? '#e74c3c' : '#f1c40f';
+        ctx.font = 'bold 11px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(p.special === 'thug' ? '!' : '$', p.x, p.y - 14);
+      }
+    }
+  },
 
-function drawParticles(ctx, G) {
-  for (const pt of G.particles) {
-    const a = clamp(pt.life / pt.maxLife, 0, 1);
-    ctx.globalAlpha = pt.kind === 'smoke' ? a * 0.8 : a;
-    ctx.fillStyle = pt.color;
-    if (pt.kind === 'smoke') {
-      ctx.beginPath(); ctx.arc(pt.x, pt.y, pt.size * (1.6 - a * 0.6), 0, Math.PI * 2); ctx.fill();
-    } else {
-      ctx.fillRect(pt.x - pt.size / 2, pt.y - pt.size / 2, pt.size, pt.size);
+  drawPolice: function (ctx, game, cam) {
+    var units = CV.Police.units;
+    for (var i = 0; i < units.length; i++) {
+      var u = units[i];
+      if (u.kind !== 'foot') continue;
+      if (!this.visible(cam, u.x, u.y, 40)) continue;
+      this.drawPerson(ctx, u.x, u.y, u.angle, '#1b3a5c', '#e0ac69', {
+        down: u.dead,
+        moving: !u.dead,
+        phase: u.walkPhase || 0,
+        gun: !u.dead
+      });
+      if (!u.dead) {
+        // Police cap dot.
+        ctx.fillStyle = '#f5f6fa';
+        ctx.beginPath(); ctx.arc(u.x, u.y, 2.2, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+  },
+
+  drawPlayer: function (ctx, game) {
+    var p = game.player;
+    if (p.mode === 'car') return; // the car itself is drawn with traffic
+    this.drawPerson(ctx, p.x, p.y, p.angle, '#ff5e78', '#c68642', {
+      moving: p.moving,
+      phase: p.walkPhase,
+      punch: p.punchT > 0,
+      gun: CV.Input.mouseDown
+    });
+    // Muzzle flash.
+    if (game.muzzleT > 0) {
+      var fx = p.x + Math.cos(p.angle) * 18;
+      var fy = p.y + Math.sin(p.angle) * 18;
+      ctx.fillStyle = 'rgba(255,200,60,0.9)';
+      ctx.beginPath(); ctx.arc(fx, fy, 5, 0, Math.PI * 2); ctx.fill();
+    }
+    // Soft ring under the player so she is easy to track.
+    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 12, 0, Math.PI * 2); ctx.stroke();
+  },
+
+  drawBullets: function (ctx, game) {
+    ctx.fillStyle = '#ffe66d';
+    var bs = game.bullets;
+    for (var i = 0; i < bs.length; i++) {
+      ctx.fillRect(bs[i].x - 2, bs[i].y - 1, 4, 2);
+    }
+  },
+
+  drawDayNight: function (ctx, game) {
+    var n = game.nightAmount;
+    if (n <= 0.01) return;
+    ctx.fillStyle = 'rgba(16,20,54,' + (n * 0.42) + ')';
+    ctx.fillRect(0, 0, CV.VIEW_W, CV.VIEW_H);
+    // Warm dusk tint near the ends of the day.
+    if (game.duskAmount > 0.05) {
+      ctx.fillStyle = 'rgba(255,120,50,' + (game.duskAmount * 0.10) + ')';
+      ctx.fillRect(0, 0, CV.VIEW_W, CV.VIEW_H);
+    }
+  },
+
+  drawVignette: function (ctx, game) {
+    var grad = ctx.createRadialGradient(
+      CV.VIEW_W / 2, CV.VIEW_H / 2, CV.VIEW_H * 0.45,
+      CV.VIEW_W / 2, CV.VIEW_H / 2, CV.VIEW_H * 0.95);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.30)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, CV.VIEW_W, CV.VIEW_H);
+    // Red flash when hurt recently.
+    if (game.hurtFlash > 0) {
+      ctx.fillStyle = 'rgba(200,30,30,' + (game.hurtFlash * 0.35) + ')';
+      ctx.fillRect(0, 0, CV.VIEW_W, CV.VIEW_H);
     }
   }
-  ctx.globalAlpha = 1;
-}
-
-function drawPopups(ctx, G) {
-  ctx.font = '800 17px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  for (const pop of G.popups) {
-    const a = clamp(pop.life / pop.maxLife, 0, 1);
-    ctx.globalAlpha = a;
-    ctx.fillStyle = pop.color;
-    ctx.strokeStyle = 'rgba(20,16,10,0.7)';
-    ctx.lineWidth = 3;
-    ctx.strokeText(pop.text, pop.x, pop.y);
-    ctx.fillText(pop.text, pop.x, pop.y);
-  }
-  ctx.globalAlpha = 1;
-  ctx.textAlign = 'left';
-}
-
-function drawDusk(ctx, G, sortedCars) {
-  const cam = G.camera;
-  // Blue-hour wash over the world, then light pools punched back in.
-  ctx.fillStyle = 'rgba(24,26,66,0.34)';
-  ctx.fillRect(cam.x - 40, cam.y - 40, G.viewW + 80, G.viewH + 80);
-  ctx.save();
-  ctx.globalCompositeOperation = 'lighter';
-  for (const l of G.world.lights) {
-    if (l.x < cam.x - 90 || l.x > cam.x + G.viewW + 90 || l.y < cam.y - 90 || l.y > cam.y + G.viewH + 90) continue;
-    const g = ctx.createRadialGradient(l.x, l.y - 8, 2, l.x, l.y - 8, 46);
-    g.addColorStop(0, 'rgba(255,214,110,0.34)');
-    g.addColorStop(1, 'rgba(255,214,110,0)');
-    ctx.fillStyle = g;
-    ctx.beginPath(); ctx.arc(l.x, l.y - 8, 46, 0, Math.PI * 2); ctx.fill();
-  }
-  for (const car of sortedCars) {
-    // Headlight cones.
-    const fx = Math.cos(car.angle), fy = Math.sin(car.angle);
-    const hx = car.x + fx * car.spec.w * 0.5, hy = car.y + fy * car.spec.w * 0.5;
-    const g = ctx.createRadialGradient(hx, hy, 4, hx + fx * 60, hy + fy * 60, 95);
-    g.addColorStop(0, 'rgba(255,243,176,0.3)');
-    g.addColorStop(1, 'rgba(255,243,176,0)');
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.moveTo(hx, hy);
-    ctx.lineTo(hx + fx * 120 - fy * 34, hy + fy * 120 + fx * 34);
-    ctx.lineTo(hx + fx * 120 + fy * 34, hy + fy * 120 - fx * 34);
-    ctx.closePath();
-    ctx.fill();
-  }
-  ctx.restore();
-}
-
-export function roundRect(ctx, x, y, w, h, r) {
-  const rr = Math.min(r, w / 2, h / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + rr, y);
-  ctx.arcTo(x + w, y, x + w, y + h, rr);
-  ctx.arcTo(x + w, y + h, x, y + h, rr);
-  ctx.arcTo(x, y + h, x, y, rr);
-  ctx.arcTo(x, y, x + w, y, rr);
-  ctx.closePath();
-}
-
-export function shade(hex, f) {
-  const n = parseInt(hex.slice(1), 16);
-  const r = Math.floor(((n >> 16) & 255) * f), g = Math.floor(((n >> 8) & 255) * f), b = Math.floor((n & 255) * f);
-  return 'rgb(' + r + ',' + g + ',' + b + ')';
-}
+};

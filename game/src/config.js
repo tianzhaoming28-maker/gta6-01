@@ -1,76 +1,84 @@
-// config.js — Palmira Heat: every shared tuning constant, palette and table.
-// One place for numbers so the rest of the game reads as behaviour, not magic.
+// Coral Vice - global configuration and shared constants.
+// Every other script reads its tuning from the CV namespace so the
+// whole game can be rebalanced from this one file.
+'use strict';
 
-export const GAME_NAME = 'PALMIRA HEAT';
-export const GAME_TAGLINE = 'One driver. One crew. One last score in the city of Palmira.';
+var CV = window.CV || {};
+window.CV = CV;
 
-export const VIEW_W = 1280;
-export const VIEW_H = 720;
+// ---- Canvas / view -------------------------------------------------------
+CV.VIEW_W = 1280;
+CV.VIEW_H = 720;
+CV.TICK = 1 / 60; // fixed simulation step, seconds
 
-// City geometry: a grid of blocks separated by two-lane roads.
-export const PITCH = 420;        // block + road pitch
-export const ROAD_W = 104;       // road width
-export const BLOCK = PITCH - ROAD_W;
-export const COLS = 7;           // blocks across
-export const ROWS = 5;           // blocks down
-export const CITY_W = COLS * PITCH + ROAD_W;
-export const CITY_H = ROWS * PITCH + ROAD_W;
-export const SAND_H = 210;       // beach strip south of the avenues
-export const WATER_H = 330;      // ocean beyond the sand
-export const WORLD_W = CITY_W;
-export const WORLD_H = CITY_H + SAND_H + WATER_H;
+// ---- City layout ---------------------------------------------------------
+// The city is a grid: square blocks of buildings separated by two-lane
+// roads. Roads run along the lines x = i * PITCH and y = j * PITCH.
+CV.BLOCK = 132;          // building block size in px
+CV.ROAD = 46;            // road width in px
+CV.PITCH = CV.BLOCK + CV.ROAD; // 178
+CV.COLS = 9;             // blocks across
+CV.ROWS = 9;             // blocks down
+CV.WORLD_W = CV.COLS * CV.PITCH + CV.ROAD;
+CV.WORLD_H = CV.ROWS * CV.PITCH + CV.ROAD;
+CV.SIDEWALK = 7;         // sidewalk border drawn around each block
 
-// Golden-hour palette.
-export const PAL = {
-  asphalt: '#43404e',
-  asphaltEdge: '#353240',
-  laneMark: '#f5d67b',
-  curb: '#8d8578',
-  sidewalk: '#cdb69a',
-  sidewalkEdge: '#b39d7f',
-  grass: '#7fae5a',
-  parkPath: '#d9c08d',
-  sand: '#ecd28f',
-  sandWet: '#dfc078',
-  water: '#2e7f9e',
-  waterDeep: '#256b8c',
-  foam: '#eaf7f2',
-  shadow: 'rgba(46,26,54,0.34)',
-  plaza: '#d8b98c',
+// ---- Player --------------------------------------------------------------
+CV.PLAYER_RADIUS = 9;
+CV.PLAYER_SPEED = 118;   // px/s on foot
+CV.PLAYER_SPRINT = 178;
+CV.PLAYER_MAX_HP = 100;
+
+// ---- Vehicles ------------------------------------------------------------
+CV.CAR_W = 34;           // sprite length
+CV.CAR_H = 17;           // sprite width
+CV.CAR_MAX_HP = 100;
+
+// ---- Wanted system -------------------------------------------------------
+CV.WANTED_DECAY = 0.55;  // crime points per second when unseen
+CV.CRIME_PUNCH = 6;
+CV.CRIME_SHOOT = 10;
+CV.CRIME_KILL = 26;
+CV.CRIME_CARJACK = 14;
+CV.CRIME_HIT_CAR = 5;
+CV.CRIME_HIT_PED = 30;
+CV.STAR_POINTS = 22;     // crime points per star
+
+// ---- Palette ---------------------------------------------------------------
+CV.COLORS = {
+  grass: '#3f7d4e',
+  grassDark: '#37703f',
+  sidewalk: '#b9b3a4',
+  road: '#33373d',
+  roadLine: '#e8d44d',
+  curb: '#8f8a7c',
+  water: '#2e6f9e',
+  sand: '#e3d29b'
 };
 
-// Building colour families: coral, teal, cream, stucco — flat-shaded blocks.
-export const BUILDING_COLORS = [
-  '#e2725b', '#e88ca0', '#f2a65a', '#f7d08a', '#fdf0d5',
-  '#5ec8c0', '#48a9a1', '#7fb5d5', '#a3c585', '#c97b84',
-  '#e9c46a', '#f4f1de', '#81b29a', '#e07a5f', '#b8b8d9',
+// Building paint jobs, pastel art-deco colours for the Coral Bay look.
+CV.BUILDING_COLORS = [
+  '#e8a2b4', '#f2c14e', '#7fc8bc', '#f4f1de', '#e07a5f',
+  '#81b29a', '#f2cc8f', '#c9ada7', '#9bb7d4', '#e6b8a2',
+  '#a3d9b1', '#f0e68c', '#dda0dd', '#87ceeb', '#ffb07c'
 ];
-export const ROOF_COLORS = ['#b5543f', '#8a5a44', '#5f7d8c', '#a26769', '#71697a', '#936639'];
 
-// Vehicle catalogue: distinct speed, grip and paint per type.
-export const CAR_TYPES = {
-  compact: { name: 'Solana Compact', w: 34, h: 17, top: 235, accel: 300, grip: 6.4, colors: ['#d94f3d', '#3d7bd9', '#e8b93e', '#57a773', '#e6e6e6'] },
-  sedan:   { name: 'Meridian Sedan', w: 38, h: 18, top: 265, accel: 330, grip: 6.0, colors: ['#31556e', '#6e3131', '#c0c6cc', '#2f4f4f', '#704214'] },
-  coupe:   { name: 'Vireo Coupe',    w: 38, h: 17, top: 330, accel: 430, grip: 6.8, colors: ['#f2c230', '#e4572e', '#17bebb', '#7d3cff', '#ff5d8f'] },
-  muscle:  { name: 'Bruto Muscle',   w: 40, h: 19, top: 310, accel: 470, grip: 5.2, colors: ['#20242b', '#8c1c13', '#e36414', '#0f4c5c', '#5f0f40'] },
-  van:     { name: 'Cargo Van',      w: 44, h: 21, top: 215, accel: 260, grip: 5.4, colors: ['#d8d3c3', '#7a8b99', '#4a6741', '#985277'] },
-  taxi:    { name: 'Palmira Cab',    w: 38, h: 18, top: 255, accel: 320, grip: 6.0, colors: ['#f7b731'] },
-  police:  { name: 'PPD Interceptor', w: 39, h: 18, top: 305, accel: 420, grip: 6.6, colors: ['#f2f2f2'] },
-  truck:   { name: 'Hauler Pickup',  w: 42, h: 20, top: 240, accel: 300, grip: 5.6, colors: ['#96705a', '#546e7a', '#8d6e63', '#37474f'] },
-};
-export const TRAFFIC_TYPES = ['compact', 'sedan', 'coupe', 'muscle', 'van', 'taxi', 'truck'];
+CV.CAR_COLORS = [
+  '#c0392b', '#2980b9', '#27ae60', '#f39c12', '#8e44ad',
+  '#ecf0f1', '#2c3e50', '#e67e22', '#1abc9c', '#fd79a8',
+  '#95a5a6', '#dfe6e9', '#6c5ce7', '#00b894'
+];
 
-// Wanted tuning: heat points map onto stars; decay when unseen and clean.
-export const HEAT_FOR_STAR = [0, 12, 34, 70, 120, 190];
-export const CRIME_HEAT = {
-  theft: 14, hitCar: 8, hitPolice: 22, hitPed: 26, assault: 12,
-  shot: 10, killPed: 34, carDamage: 5, roadblock: 16, mission: 0,
-};
-export const HEAT_DECAY = 3.2;        // points per second while hidden
-export const HEAT_DECAY_SEEN = 0.55;  // points per second while police can see you
+CV.PED_COLORS = [
+  '#e74c3c', '#3498db', '#2ecc71', '#f1c40f', '#9b59b6',
+  '#e67e22', '#1abc9c', '#fd79a8', '#ffffff', '#34495e'
+];
 
-export const PLAYER_SPEED = 148;
-export const PLAYER_SPRINT = 228;
-export const PLAYER_RADIUS = 9;
+// First names used for flavour text when a pedestrian is involved in news.
+CV.PED_NAMES = [
+  'Marisol', 'Dario', 'Paloma', 'Esteban', 'Lucia', 'Rafael',
+  'Camila', 'Hugo', 'Valentina', 'Oscar', 'Ines', 'Mateo'
+];
 
-export const SAVE_KEY = 'palmira-heat-save-v1';
+// Save-game key in localStorage.
+CV.SAVE_KEY = 'coral-vice-save-v1';

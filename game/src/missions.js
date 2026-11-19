@@ -1,309 +1,436 @@
-// missions.js — the Marisol crew story: five jobs for Rico Vega, told with
-// intro cards, objective banners, world markers and minimap blips, then free
-// roam with repeatable courier fares. Each mission is data plus small hooks.
+// Coral Vice - missions and the story arc.
+// Mari Vega owes money to the Flamingo Syndicate. Her fixer, Tia
+// Carmen, feeds her jobs from a beachfront cafe: errands, thefts,
+// chases and one very bad night. After the story, Carmen keeps
+// offering repeatable cash errands.
+'use strict';
 
-import { dist } from './rng.js';
-import { makeCar, steerToward, driveCar } from './vehicles.js';
+CV.Missions = {
+  index: 0,
+  storyDone: false,
+  active: null,       // runtime state of the current mission
+  state: 'offer',     // offer | active | done-wait
+  waitT: 0,
+  marker: null,       // {x, y, label} for HUD + minimap
 
-export const MISSIONS = [
-  {
-    id: 'first-wheels',
-    title: 'JOB 1 — FIRST WHEELS',
-    intro: 'Marisol: "Rico, I need a clean coupe for tonight. Lift one off the street and bring it to my garage. No scratches you can\'t buff out."',
-    reward: 350,
+  // ---- Story definitions -------------------------------------------------
+  // Each mission: intro text, a setup(game) that may place things in
+  // the world, and a check(game) returning 'done', 'fail' or null.
+  story: [
+    {
+      id: 'meet-carmen',
+      title: 'Welcome to Coral Bay',
+      giver: 'Tia Carmen',
+      intro: 'Carmen: "Mari! You owe the Syndicate nine grand. Start paying: meet me at the beach cafe, east side."',
+      reward: 150,
+      type: 'goto',
+      target: function (game) { return game.landmarks.cafe; },
+      objective: 'Go to the beach cafe and meet Tia Carmen'
+    },
+    {
+      id: 'first-wheels',
+      title: 'Borrowed Wheels',
+      giver: 'Tia Carmen',
+      intro: 'Carmen: "A coupe on Flamingo Row has something of mine in the trunk. Take it. Bring it to my garage."',
+      reward: 400,
+      type: 'steal-deliver',
+      objective: 'Steal the marked coupe and deliver it to the garage'
+    },
+    {
+      id: 'package-run',
+      title: 'Hot Package',
+      giver: 'Tia Carmen',
+      intro: 'Carmen: "Pick up the package at the marina. Drop it at the Neon Mile motel. Fast, querida, fast."',
+      reward: 550,
+      type: 'pickup-deliver',
+      timeLimit: 110,
+      objective: 'Pick up the package, then deliver it before the timer runs out'
+    },
+    {
+      id: 'cash-drops',
+      title: 'Loose Change',
+      giver: 'Tia Carmen',
+      intro: 'Carmen: "A courier of mine scattered three cash drops across the bay. Grab them all before someone else does."',
+      reward: 650,
+      type: 'collect',
+      count: 3,
+      objective: 'Collect all 3 cash drops'
+    },
+    {
+      id: 'debtor',
+      title: 'The Debtor',
+      giver: 'Tia Carmen',
+      intro: 'Carmen: "A bookie named Sal owes us. He runs. Catch him and take the envelope - any way you like."',
+      reward: 700,
+      type: 'catch',
+      objective: 'Catch Sal the bookie and take the envelope'
+    },
+    {
+      id: 'heat',
+      title: 'Shake the Heat',
+      giver: 'Tia Carmen',
+      intro: 'Carmen: "The Syndicate set you up - the police are coming. Get their attention, then lose them."',
+      reward: 800,
+      type: 'escape',
+      objective: 'Reach 2 wanted stars, then lose the police completely'
+    },
+    {
+      id: 'bad-night',
+      title: 'One Bad Night',
+      giver: 'Tia Carmen',
+      intro: 'Carmen: "Three Syndicate collectors are coming for you tonight. End it, Mari. All three."',
+      reward: 1500,
+      type: 'takedowns',
+      objective: 'Take down the three Syndicate collectors'
+    },
+    {
+      id: 'final-drive',
+      title: 'The Final Drive',
+      giver: 'Tia Carmen',
+      intro: 'Carmen: "One last drive: take the roadster to the ferry pier and your debt is ash. Go."',
+      reward: 2000,
+      type: 'steal-deliver',
+      objective: 'Steal the marked roadster and reach the ferry pier'
+    }
+  ],
+
+  init: function (game, startIndex, storyDone) {
+    this.index = startIndex || 0;
+    this.storyDone = !!storyDone;
+    this.active = null;
+    this.state = 'offer';
+    this.waitT = 1.2;
+    this.marker = null;
+    if (this.storyDone) this.offerErrand(game);
+    else this.offerCurrent(game);
   },
-  {
-    id: 'hot-package',
-    title: 'JOB 2 — HOT PACKAGE',
-    intro: 'Marisol: "A package at the North Depot needs to reach the docks. Fast. The PPD have been watching the depot all morning — expect company."',
-    reward: 600,
+
+  current: function () {
+    if (this.storyDone) return null;
+    return this.story[this.index] || null;
   },
-  {
-    id: 'rival-colours',
-    title: 'JOB 3 — RIVAL COLOURS',
-    intro: 'Marisol: "The Coral Kings ran our courier off the road. Their driver is cruising in a red muscle car. Catch him. Stop him. Any way you like."',
-    reward: 850,
+
+  offerCurrent: function (game) {
+    var m = this.current();
+    if (!m) {
+      this.storyDone = true;
+      this.offerErrand(game);
+      return;
+    }
+    this.state = 'offer';
+    this.waitT = 2.0;
+    game.showBanner(m.title, m.intro, 6);
+    this.setupMission(game, m);
   },
-  {
-    id: 'hot-metal',
-    title: 'JOB 4 — HOT METAL',
-    intro: 'Marisol: "That van at the depot is loaded and very, very stolen. The whole force will light up. Get it to the docks and stay in one piece."',
-    reward: 1200,
+
+  setupMission: function (game, m) {
+    var rng = game.rng;
+    this.active = { def: m, phase: 0, t: 0, timeLeft: m.timeLimit || 0, sub: {} };
+    var lm = game.landmarks;
+    if (m.type === 'goto') {
+      var t = m.target(game);
+      this.marker = { x: t.x, y: t.y, label: m.giver };
+    } else if (m.type === 'steal-deliver') {
+      // Spawn the target car parked a few blocks away, marked.
+      var spot = this.findSpot(game, 380, 620);
+      var carType = m.id === 'final-drive' ? 5 : 2;
+      var car = CV.makeCar(rng, spot.x, spot.y, rng.range(0, Math.PI * 2), { type: carType });
+      car.parked = true;
+      car.missionCar = true;
+      CV.Traffic.cars.push(car);
+      this.active.sub.car = car;
+      this.marker = { x: car.x, y: car.y, label: 'Target car' };
+    } else if (m.type === 'pickup-deliver') {
+      this.marker = { x: lm.marina.x, y: lm.marina.y, label: 'Package' };
+    } else if (m.type === 'collect') {
+      var drops = [];
+      var usedKeys = {};
+      for (var di2 = 0; di2 < (m.count || 3); di2++) {
+        var ds = this.findSpot(game, 260 + di2 * 130, 560 + di2 * 160);
+        var key = Math.round(ds.x) + ',' + Math.round(ds.y);
+        if (usedKeys[key]) ds = this.findSpot(game, 200, 900);
+        usedKeys[key] = true;
+        drops.push({ x: ds.x, y: ds.y, taken: false, kind: 'cash' });
+      }
+      this.active.sub.drops = drops;
+      game.pickups = drops;
+      this.marker = { x: drops[0].x, y: drops[0].y, label: 'Cash drop' };
+    } else if (m.type === 'catch') {
+      var spot2 = this.findSpot(game, 300, 480);
+      var ped = CV.Pedestrians.spawn(rng, CV.World, spot2);
+      ped.special = 'target';
+      ped.name = 'Sal';
+      ped.color = '#f39c12';
+      ped.hp = 40;
+      ped.speed = 96;
+      CV.Pedestrians.list.push(ped);
+      this.active.sub.ped = ped;
+      this.marker = { x: ped.x, y: ped.y, label: 'Sal' };
+    } else if (m.type === 'escape') {
+      this.marker = null;
+      this.active.sub.reachedHeat = false;
+    } else if (m.type === 'takedowns') {
+      this.active.sub.thugs = [];
+      for (var i = 0; i < 3; i++) {
+        var s = this.findSpot(game, 240 + i * 90, 420 + i * 90);
+        var thug = CV.Pedestrians.spawn(rng, CV.World, s);
+        thug.special = 'thug';
+        thug.name = 'Collector';
+        thug.color = '#2c3e50';
+        thug.hp = 60;
+        thug.hostile = true;
+        thug.fireCd = rng.range(0.5, 1.4);
+        CV.Pedestrians.list.push(thug);
+        this.active.sub.thugs.push(thug);
+      }
+      this.marker = null;
+    }
   },
-  {
-    id: 'last-score',
-    title: 'JOB 5 — THE LAST SCORE',
-    intro: 'Marisol: "One van. One bag of cash. Every badge in Palmira. Take the money, lose the heat, and bring it home to the hideout. Then we disappear."',
-    reward: 2500,
+
+  // A sidewalk-ish spot at a ring distance from the player.
+  findSpot: function (game, minD, maxD) {
+    var rng = game.rng;
+    var p = game.player;
+    for (var i = 0; i < 14; i++) {
+      var spot = rng.pick(CV.World.spawnPoints);
+      var d = CV.dist(p.x, p.y, spot.x, spot.y);
+      if (d >= minD && d <= maxD) return spot;
+    }
+    return rng.pick(CV.World.spawnPoints);
   },
-];
 
-export function makeMissionState() {
-  return {
-    index: 0,          // next story mission to offer
-    active: null,      // live mission runtime object
-    phase: 'offer',    // offer | active | done
-    marker: null,      // {x, y, label}
-    timer: 0,
-    sideJob: null,     // repeatable fare runtime
-    rivalCar: null,
-    jobCar: null,
-  };
-}
+  update: function (dt, game) {
+    if (this.state === 'offer') {
+      this.waitT -= dt;
+      if (this.waitT <= 0) this.state = 'active';
+      return;
+    }
+    if (this.state !== 'active' || !this.active) return;
+    var m = this.active.def;
+    this.active.t += dt;
+    var result = this.check(game, m);
+    if (result === 'done') this.complete(game, m);
+    else if (result === 'fail') this.fail(game, m);
+  },
 
-// Where the current objective marker sits; the HUD draws banner + blip from it.
-export function currentObjective(G) {
-  const M = G.missions;
-  if (M.active) return M.active.objective;
-  if (M.sideJob) return M.sideJob.objective;
-  if (M.phase === 'offer' && M.index < MISSIONS.length) {
-    const g = G.world.places.garage;
-    return { x: g.x, y: g.y, text: 'Go to the Marisol Crew Garage', label: 'CREW' };
-  }
-  return null;
-}
+  check: function (game, m) {
+    var a = this.active;
+    var p = game.player;
+    var lm = game.landmarks;
 
-export function startStoryMission(G, index) {
-  const def = MISSIONS[index];
-  const M = G.missions;
-  const places = G.world.places;
-  const active = {
-    def, index, step: 0, objective: null, t: 0, failed: 0,
-  };
-  M.active = active;
-  M.phase = 'active';
-  if (def.id === 'first-wheels') {
-    active.objective = { x: places.garage.x, y: places.garage.y, text: 'Steal any car and drive it to the crew garage', label: 'GARAGE' };
-  } else if (def.id === 'hot-package') {
-    active.objective = { x: places.depot.x, y: places.depot.y, text: 'Pick up the package at the North Depot', label: 'PICKUP' };
-    active.step = 0;
-  } else if (def.id === 'rival-colours') {
-    const rival = makeCar('muscle', G.world.places.depot.x - 60, G.world.places.depot.y + 160, 0, { role: 'rival', color: '#c0272d' });
-    rival.driver = 'ai';
-    rival.cruise = 215;
-    G.cars.push(rival);
-    M.rivalCar = rival;
-    active.objective = { x: rival.x, y: rival.y, text: 'Chase down the Coral Kings driver — ram or shoot his car', label: 'RIVAL', follow: rival };
-  } else if (def.id === 'hot-metal') {
-    const van = makeCar('van', places.depot.x - 40, places.depot.y + 120, 0, { role: 'mission', color: '#985277' });
-    van.driver = null;
-    G.cars.push(van);
-    M.jobCar = van;
-    active.objective = { x: van.x, y: van.y, text: 'Take the loaded van at the North Depot', label: 'VAN', follow: van };
-  } else if (def.id === 'last-score') {
-    const van = makeCar('van', places.docks.x - 80, places.docks.y - 140, 0, { role: 'mission', color: '#37474f' });
-    van.driver = null;
-    G.cars.push(van);
-    M.jobCar = van;
-    active.objective = { x: van.x, y: van.y, text: 'Grab the loot van at the docks', label: 'LOOT', follow: van };
-  }
-  G.showCard(def.title, def.intro, 'Press ENTER to roll');
-  G.audio.sting(true);
-}
+    if (m.type === 'goto') {
+      var t = m.target(game);
+      if (CV.dist(p.x, p.y, t.x, t.y) < 34) return 'done';
+    }
 
-function completeMission(G) {
-  const M = G.missions;
-  const active = M.active;
-  if (!active) return;
-  G.addCash(active.def.reward, G.player.x, G.player.y - 30);
-  G.audio.sting(true);
-  G.showCard('JOB COMPLETE', active.def.title + ' — paid $' + active.def.reward + '.', M.index + 1 >= MISSIONS.length ? 'Press ENTER' : 'Press ENTER for the next job');
-  M.index = active.index + 1;
-  M.active = null;
-  M.rivalCar = null;
-  M.jobCar = null;
-  M.phase = 'offer';
-  if (M.index >= MISSIONS.length) {
-    G.save.storyDone = true;
-    G.storyJustDone = true;
-  }
-  G.save.mission = M.index;
-  G.persist();
-}
+    if (m.type === 'steal-deliver') {
+      var car = a.sub.car;
+      if (!car) return 'fail';
+      if (a.phase === 0) {
+        this.marker = { x: car.x, y: car.y, label: 'Target car' };
+        if (p.mode === 'car' && p.car === car) {
+          a.phase = 1;
+          var dest = m.id === 'final-drive' ? lm.pier : lm.garage;
+          game.showBanner('Got it', m.id === 'final-drive' ? 'Now drive to the ferry pier!' : 'Now bring it to Carmen\'s garage.', 4);
+        }
+      } else {
+        var dest2 = m.id === 'final-drive' ? lm.pier : lm.garage;
+        this.marker = { x: dest2.x, y: dest2.y, label: m.id === 'final-drive' ? 'Ferry pier' : 'Garage' };
+        if (p.mode === 'car' && p.car === car &&
+            CV.dist(car.x, car.y, dest2.x, dest2.y) < 46) {
+          return 'done';
+        }
+        if (car.hp <= 0) return 'fail';
+      }
+    }
 
-function failMission(G, why) {
-  const M = G.missions;
-  if (!M.active) return;
-  G.showCard('JOB FAILED', why + ' Marisol: "Again. And cleaner this time."', 'Press ENTER to retry');
-  G.audio.sting(false);
-  // Clean up mission vehicles.
-  if (M.rivalCar) { const i = G.cars.indexOf(M.rivalCar); if (i >= 0) G.cars.splice(i, 1); M.rivalCar = null; }
-  if (M.jobCar) { const i = G.cars.indexOf(M.jobCar); if (i >= 0) G.cars.splice(i, 1); M.jobCar = null; }
-  M.failedIndex = M.active.index;
-  M.active = null;
-  M.phase = 'failed';
-}
+    if (m.type === 'pickup-deliver') {
+      if (a.timeLeft > 0) {
+        a.timeLeft -= CV.TICK;
+        if (a.timeLeft <= 0) return 'fail';
+      }
+      if (a.phase === 0) {
+        this.marker = { x: lm.marina.x, y: lm.marina.y, label: 'Package' };
+        if (CV.dist(p.x, p.y, lm.marina.x, lm.marina.y) < 32) {
+          a.phase = 1;
+          game.showBanner('Package picked up', 'Deliver it to the Neon Mile motel - hurry!', 4);
+          CV.Audio.cash();
+        }
+      } else {
+        this.marker = { x: lm.motel.x, y: lm.motel.y, label: 'Motel drop' };
+        if (CV.dist(p.x, p.y, lm.motel.x, lm.motel.y) < 36) return 'done';
+      }
+    }
 
-export function retryFailed(G) {
-  const M = G.missions;
-  if (M.phase === 'failed' && M.failedIndex !== undefined) {
-    M.phase = 'offer';
-    startStoryMission(G, M.failedIndex);
-  }
-}
+    if (m.type === 'collect') {
+      var drops2 = a.sub.drops || [];
+      var leftDrops = 0;
+      var nearestDrop = null;
+      var nd2 = 1e9;
+      for (var di = 0; di < drops2.length; di++) {
+        var dr = drops2[di];
+        if (dr.taken) continue;
+        var dd2 = CV.dist(p.x, p.y, dr.x, dr.y);
+        if (dd2 < 28) {
+          dr.taken = true;
+          game.cash += 50;
+          game.stats.earned += 50;
+          CV.Audio.pickup();
+          game.showToast('Cash drop collected (+$50)');
+        } else {
+          leftDrops++;
+          if (dd2 < nd2) { nd2 = dd2; nearestDrop = dr; }
+        }
+      }
+      a.sub.left = leftDrops;
+      this.marker = nearestDrop ? { x: nearestDrop.x, y: nearestDrop.y, label: 'Cash drop' } : null;
+      if (leftDrops === 0) return 'done';
+    }
 
-function atPlace(G, place, range = 64) {
-  return dist(G.player.x, G.player.y, place.x, place.y) < range;
-}
+    if (m.type === 'catch') {
+      var ped = a.sub.ped;
+      if (!ped) return 'done';
+      this.marker = { x: ped.x, y: ped.y, label: 'Sal' };
+      // Sal flees the player.
+      if (ped.state !== 'down') {
+        var d = CV.dist(ped.x, ped.y, p.x, p.y);
+        if (d < 190) {
+          ped.state = 'flee';
+          ped.fleeT = 0.4;
+          ped.panicX = p.x;
+          ped.panicY = p.y;
+        }
+        if (d < 20) return 'done'; // grabbed him
+      } else {
+        return 'done'; // knocked down also works
+      }
+      if (CV.Pedestrians.list.indexOf(ped) < 0) return 'done';
+    }
 
-export function updateMissions(G, dt) {
-  const M = G.missions;
-  const places = G.world.places;
-  const p = G.player;
+    if (m.type === 'escape') {
+      if (!a.sub.reachedHeat) {
+        if (game.stars >= 2) {
+          a.sub.reachedHeat = true;
+          game.showBanner('Heat is on', 'Now lose them: break line of sight and stay clean.', 4);
+        }
+      } else if (game.stars === 0 && game.crimePoints <= 0.5) {
+        return 'done';
+      }
+    }
 
-  // Offer point: standing at the garage starts the next story job.
-  if (M.phase === 'offer' && M.index < MISSIONS.length && G.state === 'playing') {
-    if (atPlace(G, places.garage, 74)) startStoryMission(G, M.index);
-  }
-  if (M.phase === 'offer' && M.index >= MISSIONS.length) {
-    updateSideJob(G, dt);
-  }
+    if (m.type === 'takedowns') {
+      var left = 0;
+      var nearest = null;
+      var nd = 1e9;
+      for (var i = 0; i < a.sub.thugs.length; i++) {
+        var th = a.sub.thugs[i];
+        if (th.state !== 'down') {
+          left++;
+          var dd = CV.dist(p.x, p.y, th.x, th.y);
+          if (dd < nd) { nd = dd; nearest = th; }
+        }
+      }
+      this.marker = nearest ? { x: nearest.x, y: nearest.y, label: 'Collector' } : null;
+      a.sub.left = left;
+      if (left === 0) return 'done';
+    }
 
-  const a = M.active;
-  if (!a) return;
-  a.t += dt;
-  const id = a.def.id;
+    return null;
+  },
 
-  if (id === 'first-wheels') {
-    if (p.car && atPlace(G, places.garage, 84)) completeMission(G);
-  } else if (id === 'hot-package') {
-    if (a.step === 0) {
-      if (atPlace(G, places.depot, 70)) {
-        a.step = 1;
-        M.timer = 95;
-        G.addHeat(46); // the depot was watched: instant two-star heat
-        a.objective = { x: places.docks.x, y: places.docks.y, text: 'Deliver the package to the docks — 95 seconds!', label: 'DOCKS' };
-        G.notify('PACKAGE PICKED UP — GO!', 2.4);
-        G.audio.pickup();
+  complete: function (game, m) {
+    game.pickups = [];
+    game.cash += m.reward;
+    game.stats.earned += m.reward;
+    CV.Audio.missionDone();
+    game.showBanner('Mission complete', m.title + '  +$' + m.reward, 5);
+    this.marker = null;
+    this.active = null;
+    if (!this.storyDone && m === this.current()) {
+      this.index++;
+      if (this.index >= this.story.length) {
+        this.storyDone = true;
+        game.showBanner('Debt cleared', 'Mari is free of the Syndicate. Carmen still has cash errands.', 6);
+        this.offerErrand(game);
+      } else {
+        this.offerCurrent(game);
       }
     } else {
-      M.timer -= dt;
-      a.objective.text = 'Deliver the package to the docks — ' + Math.max(0, Math.ceil(M.timer)) + 's';
-      if (M.timer <= 0) failMission(G, 'Too slow — the buyer walked.');
-      else if (atPlace(G, places.docks, 84)) completeMission(G);
+      this.offerErrand(game);
     }
-  } else if (id === 'rival-colours') {
-    const rival = M.rivalCar;
-    if (!rival) { completeMission(G); return; }
-    a.objective.x = rival.x; a.objective.y = rival.y;
-    driveRival(G, rival, dt);
-    if (rival.wrecked || rival.health <= 12 || (Math.abs(rival.speed) < 6 && dist(p.x, p.y, rival.x, rival.y) < 60 && a.t > 4 && rival.stoppedT > 2.4)) {
-      G.notify('RIVAL STOPPED', 2.4);
-      completeMission(G);
+    CV.Save.write(game);
+  },
+
+  fail: function (game, m) {
+    game.pickups = [];
+    CV.Audio.missionFail();
+    game.showBanner('Mission failed', m.title + ' - Carmen will set it up again.', 5);
+    // Clean up mission props.
+    if (this.active && this.active.sub.car) {
+      this.active.sub.car.missionCar = false;
     }
-    if (dist(p.x, p.y, rival.x, rival.y) > 1500) failMission(G, 'He got away into the traffic.');
-  } else if (id === 'hot-metal') {
-    const van = M.jobCar;
-    if (a.step === 0) {
-      if (p.car === van) {
-        a.step = 1;
-        G.setStars(3);
-        a.objective = { x: places.docks.x, y: places.docks.y, text: 'Drive the hot van to the docks — survive the heat!', label: 'DOCKS' };
-        G.notify('THE VAN IS HOT — MOVE!', 2.4);
-      }
-    } else {
-      if (!p.car) { /* on foot mid-job is allowed; marker stays on the docks */ }
-      if (van.wrecked) failMission(G, 'The van burned. The load is gone.');
-      else if (p.car === van && atPlace(G, places.docks, 90)) completeMission(G);
-    }
-  } else if (id === 'last-score') {
-    const van = M.jobCar;
-    if (a.step === 0) {
-      a.objective.x = van.x; a.objective.y = van.y;
-      if (p.car === van || atPlace(G, van, 60) && p.car) {
-        a.step = 1;
-        G.setStars(4);
-        a.objective = { x: places.hideout.x, y: places.hideout.y, text: 'Lose the heat, then reach the Vega Hideout', label: 'HIDEOUT' };
-        G.notify('CASH SECURED — LOSE THE HEAT!', 2.6);
-        G.audio.cash();
-      }
-    } else {
-      if (G.stars === 0 && atPlace(G, places.hideout, 90)) completeMission(G);
-      else if (G.stars === 0) a.objective.text = 'Heat is gone — get to the Vega Hideout';
-      else a.objective.text = 'Lose the heat (' + G.stars + ' stars), then reach the hideout';
-      if (van.wrecked && p.car !== van) failMission(G, 'The loot van is wrecked.');
-    }
-  }
-}
+    this.marker = null;
+    this.active = null;
+    if (!this.storyDone && m === this.current()) this.offerCurrent(game);
+    else this.offerErrand(game);
+  },
 
-// The rival flees along the avenues, faster than traffic, slower than Rico.
-function driveRival(G, rival, dt) {
-  if (rival.wrecked) { rival.stoppedT = (rival.stoppedT || 0) + dt; return; }
-  const p = G.player;
-  const d = dist(rival.x, rival.y, p.x, p.y);
-  if (Math.abs(rival.speed) < 6) rival.stoppedT = (rival.stoppedT || 0) + dt; else rival.stoppedT = 0;
-  // Flee waypoint: a point ahead of the rival, away from the player.
-  const away = Math.atan2(rival.y - p.y, rival.x - p.x);
-  const snap = G.world;
-  let tx = rival.x + Math.cos(rival.angle) * 260 + Math.cos(away) * 60;
-  let ty = rival.y + Math.sin(rival.angle) * 260 + Math.sin(away) * 60;
-  // Bias the flee point back onto the road grid.
-  const node = nearestRoadPoint(snap, tx, ty);
-  tx = node.x; ty = node.y;
-  const ctrl = steerToward(rival, tx, ty, dt, { throttle: d < 500 ? 1 : 0.7 });
-  driveCar(G, rival, ctrl, dt);
-}
-
-function nearestRoadPoint(world, x, y) {
-  let bx = x, by = y, bd = Infinity;
-  for (const rx of world.roadsV) {
-    const cx = rx + 52;
-    const d = Math.abs(cx - x);
-    if (d < bd) { bd = d; bx = cx; by = y; }
-  }
-  let bd2 = Infinity, hy = y;
-  for (const ry of world.roadsH) {
-    const cy = ry + 52;
-    const d = Math.abs(cy - y);
-    if (d < bd2) { bd2 = d; hy = cy; }
-  }
-  if (bd2 < bd) return { x, y: hy };
-  return { x: bx, y };
-}
-
-// --- Repeatable side work after the story ----------------------------------
-
-const FARE_SPOTS = ['garage', 'docks', 'depot', 'clinic', 'hideout', 'beach'];
-
-function updateSideJob(G, dt) {
-  const M = G.missions;
-  const places = G.world.places;
-  if (!M.sideJob) {
-    if (Math.random() < dt * 0.02 + 0.0001 && !M.sideOfferT) {
-      // Offer a fare from a random place to another, for cash.
-      const from = FARE_SPOTS[Math.floor(Math.random() * FARE_SPOTS.length)];
-      let to = FARE_SPOTS[Math.floor(Math.random() * FARE_SPOTS.length)];
-      if (to === from) to = 'docks';
-      M.sideJob = {
-        from, to, step: 0,
-        objective: { x: places[from].x, y: places[from].y, text: 'FARE: pick up at ' + places[from].label, label: 'FARE' },
+  // ---- Repeatable errands after (and between) story beats -----------------
+  offerErrand: function (game) {
+    var rng = game.rng;
+    var reward = 120 + Math.floor(rng.range(0, 5)) * 40;
+    var m;
+    if (rng.chance(0.4)) {
+      // Variant: fetch a single cash drop somewhere across the bay.
+      m = {
+        id: 'errand',
+        title: 'Cash Errand',
+        giver: 'Tia Carmen',
+        intro: 'Carmen: "Small job, quick money. Details on your map."',
+        reward: reward,
+        type: 'collect',
+        count: 1,
+        objective: 'Errand: grab the cash drop for $' + reward
       };
-      G.notify('New fare available — check the gold marker', 2.6);
+      this.state = 'offer';
+      this.waitT = 2.0;
+      this.setupMission(game, m);
+      game.showBanner('Cash Errand', 'Grab the marked cash drop for $' + reward + '.', 4);
+      return;
     }
-    return;
+    var spot = this.findSpot(game, 420, 900);
+    m = {
+      id: 'errand',
+      title: 'Cash Errand',
+      giver: 'Tia Carmen',
+      intro: 'Carmen: "Small job, quick money. Details on your map."',
+      reward: reward,
+      type: 'goto',
+      target: function () { return spot; },
+      objective: 'Errand: reach the marked spot for $' + reward
+    };
+    this.state = 'offer';
+    this.waitT = 2.0;
+    this.setupMission(game, m);
+    game.showBanner('Cash Errand', 'Reach the marked spot for $' + reward + '.', 4);
+  },
+
+  objectiveText: function (game) {
+    if (!this.active) return '';
+    var m = this.active.def;
+    var text = m.objective;
+    if (m.type === 'pickup-deliver' && this.active.timeLeft > 0) {
+      text += '  (' + Math.ceil(this.active.timeLeft) + 's)';
+    }
+    if (m.type === 'takedowns' && this.active.sub.left !== undefined) {
+      text += '  (' + this.active.sub.left + ' left)';
+    }
+    if (m.type === 'collect' && this.active.sub.left !== undefined) {
+      text = 'Collect the cash drops  (' + this.active.sub.left + ' left)';
+    }
+    if (m.type === 'escape' && this.active && !this.active.sub.reachedHeat) {
+      text = 'Cause trouble: reach 2 wanted stars';
+    }
+    return text;
   }
-  const job = M.sideJob;
-  if (job.step === 0) {
-    if (dist(G.player.x, G.player.y, places[job.from].x, places[job.from].y) < 70 && G.player.car) {
-      job.step = 1;
-      job.timer = 75;
-      job.objective = { x: places[job.to].x, y: places[job.to].y, text: 'FARE: drive to ' + places[job.to].label, label: 'FARE' };
-      G.audio.pickup();
-      G.notify('Passenger in — the clock is running', 2.2);
-    }
-  } else {
-    job.timer -= dt;
-    job.objective.text = 'FARE: drive to ' + places[job.to].label + ' — ' + Math.max(0, Math.ceil(job.timer)) + 's';
-    if (job.timer <= 0) {
-      G.notify('Fare cancelled', 2);
-      M.sideJob = null;
-    } else if (dist(G.player.x, G.player.y, places[job.to].x, places[job.to].y) < 80 && G.player.car) {
-      const pay = 90 + Math.floor(Math.random() * 130);
-      G.addCash(pay, G.player.x, G.player.y - 26);
-      G.audio.cash();
-      G.save.fares = (G.save.fares || 0) + 1;
-      G.persist();
-      M.sideJob = null;
-    }
-  }
-}
+};

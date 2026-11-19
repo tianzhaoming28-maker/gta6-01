@@ -4,16 +4,25 @@
 [![rank](https://make.fun/badge/gta6-01/tianzhaoming28-maker/gta6-01/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 [![reward](https://make.fun/badge/gta6-01/tianzhaoming28-maker/gta6-01/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 
-**Palmira Heat** — an original top-down 2D open-world crime game that runs in a desktop browser, written in vanilla JavaScript (ES modules, no libraries, no build step, no network requests). You are Rico Vega, a getaway driver back in the sun-soaked coastal city of Palmira, running jobs for Marisol's crew: steal cars, deliver a hot package against the clock, run a Coral Kings rival off the road, move a very stolen van under three stars of heat, and pull one last score — then lose every badge in the city and make the hideout.
+**Coral Vice** is a complete open-world crime game that runs in a desktop browser from static files — no build step, no network, no libraries, just hand-rolled Canvas2D. You play Mari Vega, an ex-getaway driver who owes $9,000 to the Flamingo Syndicate. Her fixer, Tia Carmen, feeds her work from a beachfront cafe: meet-ups, a stolen coupe to deliver, a timed package run, a fleeing bookie to catch, a police heat level to raise and then shake off, three Syndicate collectors to take down, and one final drive to the ferry pier that burns the debt. After the story, Carmen keeps offering repeatable cash errands.
 
-The city is a full open world: a seven-by-five grid of named blocks with pastel buildings, long golden-hour shadows, sidewalks, crosswalks, streetlights and palms, plus a beach, a pier and the sea. Eight car types (compact, sedan, coupe, muscle, van, taxi, pickup, police interceptor) each drive differently, with arcade physics, handbrake drifts, skid marks, tire and damage smoke, impact sparks and screen shake. Traffic follows lanes and panics at chaos; pedestrians stroll, chat and flee. Every crime feeds a 1–5 star wanted system: Palmira PD interceptors pursue, ram and pin you, officers bail out and shoot at high heat, and roadblocks seal the avenues — stay clean and out of sight to cool off, or get BUSTED (pinned) or WASTED (flatlined), pay the penalty and wake up at the clinic. A five-mission story chain with intro cards, objective banners, world markers and cash rewards leads into free roam with repeatable courier fares. The HUD carries cash, health, wanted stars, weapon and ammo, a speedometer, and a live minimap with roads, water, police blips and the gold objective. Sound is fully procedural WebAudio — engine hum tied to speed, two-tone sirens, gunshots, pickups and mission stings — and progress (story step, cash, settings) auto-saves to localStorage. A dusk mode lights the headlights and windows for the evening shift.
+The city of Coral Bay is generated deterministically from a seed: nine-by-nine blocks of pastel art-deco buildings, parks, parking lots, palm trees and named districts. It is fully explorable on foot and by car. Traffic AI drives the road grid in right-hand lanes, braking for cars and pedestrians; pedestrians stroll the sidewalks, pause to check their phones, and flee from gunfire, punches and speeding cars. Any parked car can be hot-wired and any moving car can be jacked with the E key, and every crime — punching, shooting, carjacking, hit-and-runs, crashes — feeds a five-star wanted system. Coral Bay PD responds with pursuit cars that steer to intercept and box you in, and with officers on foot who chase and shoot; break line of sight and the heat decays.
+
+Combat is punch (F) plus a mouse-aimed pistol with synthesized gunshots. The HUD shows health, car condition, cash, wanted stars, the district name and clock, a live minimap with police blips and a gold objective marker with a distance arrow, and a speedometer while driving. Everything is wrapped in a day-night cycle with lit windows and dusk tints, a start screen with continue support, progress saved to localStorage, a pause screen, a "wasted" hospital respawn, and a fully synthesized WebAudio soundtrack and effects — engine-quiet, file-free, and generated in code.
+
+Controls: WASD / arrows to move and drive, SHIFT to sprint, E to enter or exit a car, F or SPACE to punch, mouse to aim and hold click to shoot, SPACE as handbrake while driving, P to pause, M to mute.
 
 ## Run it
 
 ```sh
 node serve.ts
-# then open http://localhost:8080 in desktop Chrome
-# hand-in check: mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+# then open http://localhost:8173/ in a desktop browser
+# (opening game/index.html directly from disk works too)
+
+# Produce the make.fun hand-in (copies game/, decodes the embedded
+# screenshots and writes dossier.json):
+node pack-screenshots.mjs   # only needed after re-capturing screenshots
+node main.ts                # writes to /output, or $MAKEFUN_OUTPUT_DIR
 ```
 
 ---

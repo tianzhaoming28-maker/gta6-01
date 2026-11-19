@@ -1,142 +1,120 @@
-// shots.js — deterministic screenshot staging. A URL like
-// ?shot=chase&seed=1 builds a composed, frozen scene with the full HUD up,
-// so the four hand-in screenshots are real renders of real game state.
+// Coral Vice - screenshot scenarios.
+// Open index.html?shot=<name> and the game builds one deterministic
+// scene, steps the simulation a fixed number of ticks, renders a
+// single frame and sets window.__shotReady = true. Used to capture
+// the store screenshots with a headless browser; harmless in play.
+'use strict';
 
-import { makeCar } from './vehicles.js';
+CV.Shots = {
+  names: ['cover', 'street', 'chase', 'mission'],
 
-export function parseShotQuery() {
-  const q = new URLSearchParams(window.location.search);
-  const name = q.get('shot');
-  if (!name) return null;
-  const seed = parseInt(q.get('seed') || '1', 10) || 1;
-  return { name, seed };
-}
+  // Fixed tick counts per scene so every capture is reproducible.
+  ticks: {
+    cover: 0,
+    street: 50,
+    chase: 42,
+    mission: 30
+  },
 
-// Called once after the world and cast exist. Each scene sets the player,
-// traffic, police, wanted level and mission state, then freezes the world
-// (G.frozen) so the capture is stable.
-export function stageShot(G, name) {
-  const world = G.world;
-  const places = world.places;
-  G.state = 'playing';
-  G.save.started = true;
+  setup: function (game, name) {
+    var rng = game.rng;
+    var p = game.player;
 
-  if (name === 'cover') {
-    // Driving downtown among traffic, mid first job, banner + minimap up.
-    const car = makeCar('coupe', world.roadsV[3] + 76, world.roadsH[2] + 210, Math.PI / 2, { role: 'player', color: '#f2c230' });
-    car.driver = 'player';
-    car.speed = 150; car.vx = 0; car.vy = 150;
-    G.cars.push(car);
-    G.player.car = car;
-    G.player.x = car.x; G.player.y = car.y;
-    addTrafficNear(G, car.x, car.y);
-    G.missions.index = 0;
-    G.missions.phase = 'active';
-    G.missions.active = { def: { id: 'first-wheels', title: 'JOB 1', reward: 350 }, index: 0, step: 0, t: 3, objective: { x: places.garage.x, y: places.garage.y, text: 'Steal any car and drive it to the crew garage', label: 'GARAGE' } };
-    G.cash = 470;
-  } else if (name === 'chase') {
-    // Four-star pursuit: interceptors closing in, smoke and sparks flying.
-    const car = makeCar('muscle', world.roadsV[4] + 76, world.roadsH[3] + 300, Math.PI / 2, { role: 'player', color: '#8c1c13' });
-    car.driver = 'player';
-    car.speed = 205; car.vx = 0; car.vy = 205;
-    car.health = 38;
-    G.cars.push(car);
-    G.player.car = car;
-    G.player.x = car.x; G.player.y = car.y;
-    G.player.hasPistol = true; G.player.ammo = 24;
-    const spots = [
-      [car.x - 52, car.y - 74, Math.PI / 2 + 0.24],
-      [car.x + 56, car.y - 108, Math.PI / 2 - 0.18],
-      [car.x - 6, car.y - 178, Math.PI / 2 + 0.05],
-      [car.x + 96, car.y + 96, Math.PI / 2 + 0.5],
-    ];
-    for (const [x, y, a] of spots) {
-      const cop = makeCar('police', x, y, a, { role: 'police', color: '#f2f2f2' });
-      cop.driver = 'police';
-      cop.speed = 195; cop.vx = Math.sin(a) * 0; cop.vy = 195;
-      G.cars.push(cop);
+    if (name === 'cover') {
+      // The start screen over a busy downtown intersection at dusk.
+      game.state = 'menu';
+      game.dayT = 0.79;
+      var c = CV.Traffic.nodePos(4, 4);
+      p.x = c.x + 30;
+      p.y = c.y + 44;
+      game.camera.x = CV.clamp(c.x - CV.VIEW_W / 2, 0, CV.WORLD_W - CV.VIEW_W);
+      game.camera.y = CV.clamp(c.y - CV.VIEW_H / 2, 0, CV.WORLD_H - CV.VIEW_H);
+      this.scatterCrowd(game, c.x, c.y, 7);
+      return;
     }
-    addTrafficNear(G, car.x + 200, car.y + 300);
-    G.setHeat(150); // four stars
-    G.policeSeen = true;
-    G.cash = 2130;
-    G.spawnSparks(car.x + 16, car.y - 6, 12, '#ffd76a');
-    // A drift arc of skid marks behind the muscle car, and engine smoke.
-    for (let i = 0; i < 16; i++) {
-      G.addSkid(car.x - 8 + Math.sin(i * 0.4) * 6, car.y - 30 - i * 11);
-      G.addSkid(car.x + 8 + Math.sin(i * 0.4) * 6, car.y - 30 - i * 11);
+
+    game.state = 'play';
+
+    if (name === 'street') {
+      // Mari on foot downtown, mid-morning, people and traffic around.
+      game.dayT = 0.44;
+      var s = CV.Traffic.nodePos(4, 5);
+      p.x = s.x - CV.ROAD / 2 + 4;
+      p.y = s.y + 60;
+      p.angle = Math.PI / 3;
+      this.scatterCrowd(game, s.x, s.y, 8);
+      game.cash = 2450;
+      CV.Missions.marker = { x: game.landmarks.cafe.x, y: game.landmarks.cafe.y, label: 'Cafe' };
+      return;
     }
-    for (let i = 0; i < 10; i++) {
-      G.particles.push({ x: car.x - 16 + i * 3.4, y: car.y - 24 - i * 8, vx: 0, vy: -14, life: 1.8, maxLife: 1.8, size: 11 + i * 0.7, color: 'rgba(70,66,74,0.72)', kind: 'smoke' });
-      G.particles.push({ x: car.x + 12, y: car.y - 40 - i * 9, vx: 4, vy: -10, life: 1.5, maxLife: 1.5, size: 8, color: 'rgba(215,215,220,0.6)', kind: 'smoke' });
+
+    if (name === 'chase') {
+      // Three-star pursuit on a long east-west avenue at golden hour.
+      game.dayT = 0.80;
+      var road = CV.Traffic.nodePos(1, 3);
+      var car = CV.makeCar(rng, road.x + 120, road.y + CV.ROAD / 4, 0, { type: 2, color: '#e74c3c' });
+      car.driver = 'player';
+      car.parked = false;
+      car.speed = 215;
+      CV.Traffic.cars.push(car);
+      p.mode = 'car';
+      p.car = car;
+      p.x = car.x;
+      p.y = car.y;
+      // Two police cars right behind.
+      for (var i = 0; i < 2; i++) {
+        var pc = CV.makeCar(rng, car.x - 95 - i * 62, road.y + CV.ROAD / 4 + (i ? 9 : -5), 0, {
+          type: 1, color: '#f5f6fa', driver: 'police'
+        });
+        pc.parked = false;
+        pc.driver = 'police';
+        pc.police = true;
+        pc.speed = 205;
+        pc.siren = i * 2.2;
+        CV.Traffic.cars.push(pc);
+        CV.Police.units.push({ kind: 'car', car: pc, dead: false, deadT: 0, stuckT: 0 });
+      }
+      game.crimePoints = CV.STAR_POINTS * 3;
+      game.stars = 3;
+      game.cash = 5110;
+      return;
     }
-    G.missions.index = 3;
-    G.missions.phase = 'active';
-    G.missions.active = { def: { id: 'hot-metal', title: 'JOB 4', reward: 1200 }, index: 3, step: 1, t: 40, objective: { x: places.docks.x, y: places.docks.y, text: 'Drive the hot van to the docks — survive the heat!', label: 'DOCKS' } };
-  } else if (name === 'mission') {
-    // On foot at the depot pickup, gold marker overhead, locals around.
-    G.player.x = places.depot.x - 30;
-    G.player.y = places.depot.y + 96;
-    G.player.angle = 0.4;
-    G.player.hasPistol = false;
-    G.cash = 1095;
-    G.missions.index = 1;
-    G.missions.phase = 'active';
-    G.missions.active = { def: { id: 'hot-package', title: 'JOB 2', reward: 600 }, index: 1, step: 0, t: 5, objective: { x: places.depot.x, y: places.depot.y, text: 'Pick up the package at the North Depot', label: 'PICKUP' } };
-    // A couple of pedestrians stroll past the marker.
-    let n = 0;
-    for (const ped of G.peds) {
-      if (ped.isOfficer) continue;
-      ped.x = G.player.x + 40 + n * 34;
-      ped.y = G.player.y + 26 - n * 18;
-      ped.hasTarget = false;
-      if (++n >= 4) break;
+
+    if (name === 'mission') {
+      // A collector confrontation: Mari aims, marker on the motel.
+      game.dayT = 0.55;
+      var m = CV.Traffic.nodePos(5, 3);
+      p.x = m.x - 70;
+      p.y = m.y + 30;
+      var thug = CV.Pedestrians.spawn(rng, CV.World, { x: m.x + 26, y: m.y + 22 });
+      thug.special = 'thug';
+      thug.hostile = true;
+      thug.color = '#2c3e50';
+      thug.hp = 60;
+      thug.x = m.x + 30;
+      thug.y = m.y + 24;
+      thug.angle = Math.PI;
+      CV.Pedestrians.list.push(thug);
+      p.angle = Math.atan2(thug.y - p.y, thug.x - p.x);
+      this.scatterCrowd(game, m.x, m.y, 4);
+      game.cash = 3320;
+      game.crimePoints = CV.STAR_POINTS;
+      game.stars = 1;
+      CV.Missions.marker = { x: game.landmarks.motel.x, y: game.landmarks.motel.y, label: 'Motel drop' };
+      return;
     }
-    const van = makeCar('van', places.depot.x + 66, places.depot.y + 128, 0.1, { role: 'parked', color: '#7a8b99' });
-    van.driver = null;
-    G.cars.push(van);
-  } else if (name === 'dusk') {
-    // Dusk standoff by the beach road: headlights on, pistol drawn, one star.
-    G.dusk = true;
-    G.player.x = world.roadsV[5] + 40;
-    G.player.y = world.beachY - 60;
-    G.player.angle = 0.9;
-    G.player.hasPistol = true;
-    G.player.ammo = 17;
-    G.cash = 3420;
-    const mine = makeCar('coupe', G.player.x - 60, G.player.y + 42, 0.5, { role: 'parked', color: '#17bebb' });
-    mine.driver = null;
-    G.cars.push(mine);
-    const cop = makeCar('police', G.player.x + 150, G.player.y - 30, Math.PI + 0.3, { role: 'police', color: '#f2f2f2' });
-    cop.driver = 'police';
-    G.cars.push(cop);
-    // An officer on foot, weapon up, between the cars.
-    const officer = G.spawnPed(cop.x - 26, cop.y + 22, { officer: true });
-    officer.shirt = '#20304a';
-    officer.angle = Math.atan2(G.player.y - officer.y, G.player.x - officer.x);
-    G.setHeat(20); // one star
-    G.missions.index = 5;
-    G.missions.phase = 'offer';
-    G.missions.sideJob = { from: 'beach', to: 'garage', step: 1, timer: 61, objective: { x: places.garage.x, y: places.garage.y, text: 'FARE: drive to Marisol Crew Garage — 61s', label: 'FARE' } };
+  },
+
+  scatterCrowd: function (game, x, y, n) {
+    for (var i = 0; i < n; i++) {
+      var ped = CV.Pedestrians.spawn(game.rng, CV.World, { x: x, y: y });
+      ped.x = CV.clamp(x + game.rng.range(-120, 120), 12, CV.WORLD_W - 12);
+      ped.y = CV.clamp(y + game.rng.range(-90, 90), 12, CV.WORLD_H - 12);
+      if (CV.World.pointInBuilding(ped.x, ped.y, 4)) {
+        ped.x = x;
+        ped.y = y + 20 + i * 6;
+      }
+      CV.Pedestrians.list.push(ped);
+    }
   }
-  G.refreshObjective();
-  G.frozen = true;
-  // Settle a few frames so effects and camera land where the scene wants them.
-  G.updateCamera(1);
-}
-
-function addTrafficNear(G, x, y) {
-  const world = G.world;
-  const defs = [
-    ['sedan', world.roadsV[3] + 30, y - 260, Math.PI / 2, '#31556e'],
-    ['taxi', world.roadsV[3] + 76, y + 330, Math.PI / 2, '#f7b731'],
-    ['compact', world.roadsV[4] + 30, y - 60, -Math.PI / 2, '#57a773'],
-    ['truck', world.roadsV[2] + 76, y + 120, Math.PI / 2, '#546e7a'],
-  ];
-  for (const [type, cx, cy, a, color] of defs) {
-    const car = makeCar(type, cx, cy, a, { role: 'traffic', color });
-    car.driver = 'ai';
-    car.speed = 110;
-    G.cars.push(car);
-  }
-}
+};
